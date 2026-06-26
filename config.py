@@ -10,11 +10,11 @@ class Config:
     API_HASH = os.getenv("API_HASH", "cab85305bf85125a2ac053210bcd1030")
 
     # MongoDB
-    MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://rs92573993688:pVf4EeDuRi2o92ex@cluster0.9u29q.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
     DB_NAME = os.getenv("DB_NAME", "yt_bot")
 
     # Force Subscribe Channel ID (must be integer, e.g., -100123456)
-    CHANNEL_ID = os.getenv("CHANNEL_ID", "")
+    CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002888391802")
     if CHANNEL_ID:
         CHANNEL_ID = int(CHANNEL_ID)
 

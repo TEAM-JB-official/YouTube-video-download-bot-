@@ -14,7 +14,7 @@ class Config:
     DB_NAME = os.getenv("DB_NAME", "yt_bot")
 
     # Force Subscribe Channel ID (must be integer, e.g., -100123456)
-    CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002888391802")
+    CHANNEL_ID = os.getenv("CHANNEL_ID")
     if CHANNEL_ID:
         CHANNEL_ID = int(CHANNEL_ID)
 

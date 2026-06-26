@@ -1,6 +1,6 @@
 pyrogram==2.0.106
 tgcrypto==1.2.5
-yt-dlp==2024.7.21
+yt-dlp==2025.9.23
 flask==2.3.3
 motor==3.3.2
 aiofiles==23.2.1

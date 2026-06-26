@@ -7,7 +7,7 @@ import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
-from database import get_user, get_user_settings, get_user_downloads_today, add_download_history, update_user
+from database import get_user, get_user_settings, get_user_downloads_today, add_download_history
 from helpers import humanbytes, get_duration
 from handlers.force_sub import force_subscribe
 import logging
@@ -21,7 +21,7 @@ PLAYLIST_CACHE = {}
 # Robust YouTube URL regex
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
-# Common yt-dlp options to avoid SABR and get all formats
+# Common yt-dlp options to avoid SABR
 BASE_YDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
@@ -67,6 +67,7 @@ async def youtube_handler(client, message):
                 await processing.edit_text("❌ Playlist is empty.")
                 return
 
+            # Cache playlist
             pl_key = str(uuid.uuid4())[:8]
             PLAYLIST_CACHE[pl_key] = {
                 'entries': entries,
@@ -83,16 +84,21 @@ async def youtube_handler(client, message):
                         callback_data=f"pl|{pl_key}|{idx}"
                     )
                 ])
-            buttons.append([InlineKeyboardButton("📥 Download All", callback_data=f"pl_all|{pl_key}")])
+            # Download All buttons
+            buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
+            buttons.append([InlineKeyboardButton("🎵 Download All (Audio)", callback_data=f"pl_all_audio|{pl_key}")])
             buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
             await processing.edit_text(
-                f"**Playlist Detected**\n\nSelect a video to download, or download all.",
+                f"**Playlist Detected**\n\nSelect a video or download all.",
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
             return
 
+        # Single video
         await show_formats(client, processing, url, info)
 
+    except yt_dlp.utils.DownloadError as e:
+        await processing.edit_text(f"❌ YouTube error: {e}")
     except Exception as e:
         logger.exception("Error processing URL")
         try:
@@ -197,15 +203,29 @@ async def playlist_item(client, callback_query):
         await callback_query.answer("Invalid video.", show_alert=True)
         return
     video_url = f"https://youtu.be/{video_id}"
-    class FakeMessage:
-        text = video_url
-        from_user = callback_query.from_user
-        reply = callback_query.message.reply
-    await youtube_handler(client, FakeMessage())
-    await callback_query.message.delete()
 
-@Client.on_callback_query(filters.regex(r"^pl_all\|"))
-async def playlist_all(client, callback_query):
+    try:
+        ydl_opts = {
+            **BASE_YDL_OPTS,
+            "cookiefile": Config.COOKIE_FILE,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+        await show_formats(client, callback_query.message, video_url, info)
+        await callback_query.message.delete()
+    except Exception as e:
+        await callback_query.answer(f"Error: {e}", show_alert=True)
+
+# ---- Playlist All handlers ----
+@Client.on_callback_query(filters.regex(r"^pl_all_video\|"))
+async def playlist_all_video(client, callback_query):
+    await playlist_all(client, callback_query, mode="video")
+
+@Client.on_callback_query(filters.regex(r"^pl_all_audio\|"))
+async def playlist_all_audio(client, callback_query):
+    await playlist_all(client, callback_query, mode="audio")
+
+async def playlist_all(client, callback_query, mode):
     parts = callback_query.data.split("|")
     if len(parts) < 2:
         await callback_query.answer("Invalid data.", show_alert=True)
@@ -220,8 +240,6 @@ async def playlist_all(client, callback_query):
         await callback_query.answer("No entries found.", show_alert=True)
         return
 
-    await callback_query.message.edit_text(f"Adding {len(entries)} videos to queue...")
-    queue = client.queue
     user_id = callback_query.from_user.id
     user = await get_user(user_id)
     if not user or user.get("banned"):
@@ -235,20 +253,85 @@ async def playlist_all(client, callback_query):
         await callback_query.message.edit_text(f"⚠️ Daily limit reached ({daily_limit}).")
         return
 
+    # Limit to 10 videos per batch
     max_dl = min(len(entries), 10, remaining)
-    count = 0
-    async def dummy_callback(text):
-        pass
+    total = max_dl
 
-    for entry in entries[:max_dl]:
+    # Batch status message
+    status_msg = await callback_query.message.edit_text(
+        f"⚡ **Batch process started**\n"
+        f"🎯 Mode: {'Video' if mode=='video' else 'Audio'}\n"
+        f"📦 Total: {total}\n"
+        f"⏳ Processing: 0/{total}\n\n"
+        f"Powered by Team JB ❤️"
+    )
+
+    queue = client.queue
+    completed = 0
+    failed = 0
+    lock = asyncio.Lock()  # to safely update counts
+
+    # Define progress updater
+    async def update_progress(inc_completed=0, inc_failed=0):
+        nonlocal completed, failed
+        async with lock:
+            completed += inc_completed
+            failed += inc_failed
+            current = completed + failed
+            if current <= total:
+                await status_msg.edit_text(
+                    f"⚡ **Batch process started**\n"
+                    f"🎯 Mode: {'Video' if mode=='video' else 'Audio'}\n"
+                    f"📦 Total: {total}\n"
+                    f"⏳ Processing: {current}/{total}\n"
+                    f"✅ Completed: {completed}\n"
+                    f"❌ Failed: {failed}\n\n"
+                    f"Powered by Team JB ❤️"
+                )
+            # If all done, send final message
+            if current == total:
+                await status_msg.edit_text(
+                    f"✅ **Batch Complete!**\n"
+                    f"🎯 Mode: {'Video' if mode=='video' else 'Audio'}\n"
+                    f"📦 Total: {total}\n"
+                    f"✅ Success: {completed}\n"
+                    f"❌ Failed: {failed}\n\n"
+                    f"Powered by Team JB ❤️"
+                )
+
+    # Add each video to queue
+    for idx, entry in enumerate(entries[:max_dl]):
         video_id = entry.get('id')
         if not video_id:
             continue
         video_url = f"https://youtu.be/{video_id}"
-        await queue.add_task(user_id, video_url, "bestvideo+bestaudio", "video", dummy_callback)
-        count += 1
 
-    await callback_query.message.edit_text(f"✅ Added {count} videos to the queue.")
+        # Individual callback for each video
+        async def single_callback(text, index=idx):
+            # Send per-video status to user
+            await client.send_message(user_id, f"🎬 Video {index+1}/{total}: {text}")
+            # Update batch progress when finished or failed
+            if "✅" in text or "completed" in text.lower():
+                await update_progress(inc_completed=1)
+            elif "❌" in text or "error" in text.lower() or "failed" in text.lower():
+                await update_progress(inc_failed=1)
+
+        # Add task
+        await queue.add_task(user_id, video_url, "bestvideo+bestaudio" if mode == "video" else "bestaudio", mode, single_callback)
+
+    # Send join channel button if configured
+    if Config.CHANNEL_ID:
+        try:
+            invite_link = await client.create_chat_invite_link(Config.CHANNEL_ID)
+            await client.send_message(
+                user_id,
+                "🔔 **Join our channel for updates!**",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📢 Join Channel", url=invite_link.invite_link)]
+                ])
+            )
+        except Exception as e:
+            logger.warning(f"Could not send channel invite: {e}")
 
 @Client.on_callback_query(filters.regex("cancel"))
 async def cancel_callback(client, callback_query):
@@ -283,14 +366,13 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
     if Config.HTTP_PROXY:
         ydl_opts["proxy"] = Config.HTTP_PROXY
 
-    # Run yt-dlp in a thread to avoid blocking the event loop
+    # Run yt-dlp in a thread
     def _download():
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(url, download=True)
-        except yt_dlp.utils.DownloadError as e:
+        except (yt_dlp.utils.ExtractorError, yt_dlp.utils.DownloadError) as e:
             if "Requested format is not available" in str(e):
-                # Fallback to best quality
                 ydl_opts["format"] = "bestaudio" if mode == "audio" else "bestvideo+bestaudio"
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     return ydl.extract_info(url, download=True)
@@ -300,6 +382,7 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
     try:
         info = await asyncio.to_thread(_download)
     except Exception as e:
+        await progress_callback(f"❌ Download failed: {e}")
         raise
 
     # Extract metadata
@@ -367,6 +450,7 @@ async def upload_file(client, user_id, file_path, thumb, title, duration, width,
                 thumb=thumb if thumb else None,
                 supports_streaming=True
             )
+        await callback("✅ Upload completed!")
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)

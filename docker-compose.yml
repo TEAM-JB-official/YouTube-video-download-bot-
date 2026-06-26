@@ -1,0 +1,21 @@
+version: '3'
+services:
+  bot:
+    build: .
+    environment:
+      - BOT_TOKEN=your_token
+      - API_ID=12345
+      - API_HASH=your_hash
+      - MONGO_URI=mongodb://mongo:27017
+      - CHANNEL_ID=-100123456
+    ports:
+      - "80:80"
+    depends_on:
+      - mongo
+    restart: unless-stopped
+  mongo:
+    image: mongo:latest
+    volumes:
+      - mongo_data:/data/db
+volumes:
+  mongo_data:

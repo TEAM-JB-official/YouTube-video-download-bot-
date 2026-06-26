@@ -1,6 +1,6 @@
+from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
-import asyncio
 from config import Config
 
 async def force_subscribe(client, message):

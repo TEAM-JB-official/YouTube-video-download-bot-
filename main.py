@@ -21,8 +21,8 @@ async def main():
     await connect_db()
     logger.info("Connected to MongoDB")
 
-    # Start queue
-    queue = DownloadQueue(max_workers=3)
+    # Start queue with 2 workers to reduce memory/CPU load
+    queue = DownloadQueue(max_workers=2)
     await queue.start()
     logger.info("Download queue started")
 

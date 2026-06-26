@@ -5,7 +5,7 @@ from helpers import get_ist_time
 import os
 
 # Admin list (from config or hardcode)
-ADMIN_IDS = [123456789]  # Replace with your admin IDs
+ADMIN_IDS = [1955406483]  # Replace with your admin IDs
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS

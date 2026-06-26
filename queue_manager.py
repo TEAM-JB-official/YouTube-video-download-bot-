@@ -1,8 +1,13 @@
 import asyncio
 from collections import defaultdict
-from helpers import humanbytes
 from config import Config
 import logging
+
+# Database functions
+from database import get_user, get_user_downloads_today, add_download_history
+
+# Download/upload functions from handlers.download
+from handlers.download import perform_download, upload_file
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +18,7 @@ class DownloadQueue:
         self.max_workers = max_workers
         self.workers = []
         self.running = False
+        self.client = None  # will be set from main.py
 
     async def start(self):
         self.running = True
@@ -33,7 +39,7 @@ class DownloadQueue:
 
     async def _process_task(self, task):
         user_id = task["user_id"]
-        user = await get_user(user_id)  # from database
+        user = await get_user(user_id)
         if not user or user.get("banned"):
             await task["callback"]("❌ You are banned.")
             return
@@ -45,28 +51,23 @@ class DownloadQueue:
             await task["callback"](f"⚠️ You've reached your daily limit of {daily_limit} downloads.")
             return
 
-        # Check file size limit
-        size_limit_mb = user.get("size_limit_mb", Config.FREE_FILE_SIZE_MB)
-        # We'll check actual file size after download
-
-        # Download
         callback = task["callback"]
         await callback("⬇️ Download started...")
-        # Call actual download function (from download handler)
-        # We'll pass a progress callback
-        from handlers.download import perform_download
+
         try:
             result = await perform_download(
+                user_id=user_id,
                 url=task["url"],
                 format_id=task["format_id"],
                 mode=task["mode"],
-                user_id=user_id,
                 progress_callback=callback
             )
+
             if result and result.get("file_path"):
-                # Upload
                 await callback("📤 Uploading...")
+                # Use the stored client for sending files
                 await upload_file(
+                    client=self.client,
                     user_id=user_id,
                     file_path=result["file_path"],
                     thumb=result.get("thumb"),
@@ -77,18 +78,19 @@ class DownloadQueue:
                     mode=task["mode"],
                     callback=callback
                 )
-                # Record download
+                # Record download history
                 await add_download_history(user_id, task["url"], task["format_id"], result.get("size", 0))
                 await callback("✅ Download and upload completed!")
+            else:
+                await callback("❌ Download failed – no file produced.")
         except Exception as e:
             logger.exception(f"Download error for user {user_id}: {e}")
             await callback(f"❌ Error: {e}")
 
     async def add_task(self, user_id, url, format_id, mode, callback):
-        # Check if user already has many active tasks
         user = await get_user(user_id)
         if not user:
-            await callback("❌ User not found. Please start me first.")
+            await callback("❌ User not found. Please /start first.")
             return
         queue_limit = user.get("queue_limit", Config.FREE_QUEUE_LIMIT)
         if self.active[user_id] >= queue_limit:

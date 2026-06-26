@@ -67,7 +67,6 @@ async def youtube_handler(client, message):
                 await processing.edit_text("❌ Playlist is empty.")
                 return
 
-            # Cache playlist
             pl_key = str(uuid.uuid4())[:8]
             PLAYLIST_CACHE[pl_key] = {
                 'entries': entries,
@@ -84,7 +83,6 @@ async def youtube_handler(client, message):
                         callback_data=f"pl|{pl_key}|{idx}"
                     )
                 ])
-            # Download All buttons
             buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
             buttons.append([InlineKeyboardButton("🎵 Download All (Audio)", callback_data=f"pl_all_audio|{pl_key}")])
             buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
@@ -94,7 +92,6 @@ async def youtube_handler(client, message):
             )
             return
 
-        # Single video
         await show_formats(client, processing, url, info)
 
     except yt_dlp.utils.DownloadError as e:
@@ -253,11 +250,9 @@ async def playlist_all(client, callback_query, mode):
         await callback_query.message.edit_text(f"⚠️ Daily limit reached ({daily_limit}).")
         return
 
-    # Limit to 10 videos per batch
     max_dl = min(len(entries), 10, remaining)
     total = max_dl
 
-    # Batch status message
     status_msg = await callback_query.message.edit_text(
         f"⚡ **Batch process started**\n"
         f"🎯 Mode: {'Video' if mode=='video' else 'Audio'}\n"
@@ -269,9 +264,8 @@ async def playlist_all(client, callback_query, mode):
     queue = client.queue
     completed = 0
     failed = 0
-    lock = asyncio.Lock()  # to safely update counts
+    lock = asyncio.Lock()
 
-    # Define progress updater
     async def update_progress(inc_completed=0, inc_failed=0):
         nonlocal completed, failed
         async with lock:
@@ -288,7 +282,6 @@ async def playlist_all(client, callback_query, mode):
                     f"❌ Failed: {failed}\n\n"
                     f"Powered by Team JB ❤️"
                 )
-            # If all done, send final message
             if current == total:
                 await status_msg.edit_text(
                     f"✅ **Batch Complete!**\n"
@@ -299,27 +292,21 @@ async def playlist_all(client, callback_query, mode):
                     f"Powered by Team JB ❤️"
                 )
 
-    # Add each video to queue
     for idx, entry in enumerate(entries[:max_dl]):
         video_id = entry.get('id')
         if not video_id:
             continue
         video_url = f"https://youtu.be/{video_id}"
 
-        # Individual callback for each video
         async def single_callback(text, index=idx):
-            # Send per-video status to user
             await client.send_message(user_id, f"🎬 Video {index+1}/{total}: {text}")
-            # Update batch progress when finished or failed
             if "✅" in text or "completed" in text.lower():
                 await update_progress(inc_completed=1)
             elif "❌" in text or "error" in text.lower() or "failed" in text.lower():
                 await update_progress(inc_failed=1)
 
-        # Add task
         await queue.add_task(user_id, video_url, "bestvideo+bestaudio" if mode == "video" else "bestaudio", mode, single_callback)
 
-    # Send join channel button if configured
     if Config.CHANNEL_ID:
         try:
             invite_link = await client.create_chat_invite_link(Config.CHANNEL_ID)
@@ -345,45 +332,65 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
     os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
     output = f"{Config.DOWNLOAD_DIR}/{uid}.%(ext)s"
 
-    # Build format string
+    def build_ydl_opts(fmt):
+        opts = {
+            **BASE_YDL_OPTS,
+            "cookiefile": Config.COOKIE_FILE,
+            "outtmpl": output,
+            "merge_output_format": "mp4",
+            "format": fmt,
+        }
+        if mode == "audio":
+            opts.update({
+                "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
+            })
+        if Config.HTTP_PROXY:
+            opts["proxy"] = Config.HTTP_PROXY
+        return opts
+
+    # Define a list of formats to try, in order of preference
     if mode == "video":
-        ydl_format = f"{format_id}+bestaudio/best" if format_id not in ["bestvideo+bestaudio", "bestvideo"] else "bestvideo+bestaudio"
-    else:
-        ydl_format = format_id if format_id != "bestaudio" else "bestaudio/best"
+        if format_id in ["bestvideo+bestaudio", "bestvideo"]:
+            formats_to_try = ["bestvideo+bestaudio", "bestvideo+bestaudio/best", "best"]
+        else:
+            formats_to_try = [
+                f"{format_id}+bestaudio/best",
+                "bestvideo+bestaudio",
+                "bestvideo+bestaudio/best",
+                "best"
+            ]
+    else:  # audio
+        if format_id == "bestaudio":
+            formats_to_try = ["bestaudio", "bestaudio/best", "best"]
+        else:
+            formats_to_try = [
+                format_id,
+                "bestaudio",
+                "bestaudio/best",
+                "best"
+            ]
 
-    ydl_opts = {
-        **BASE_YDL_OPTS,
-        "cookiefile": Config.COOKIE_FILE,
-        "outtmpl": output,
-        "merge_output_format": "mp4",
-        "format": ydl_format,
-    }
-    if mode == "audio":
-        ydl_opts.update({
-            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
-        })
-
-    if Config.HTTP_PROXY:
-        ydl_opts["proxy"] = Config.HTTP_PROXY
-
-    # Run yt-dlp in a thread
-    def _download():
+    info = None
+    last_error = None
+    for fmt in formats_to_try:
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=True)
-        except (yt_dlp.utils.ExtractorError, yt_dlp.utils.DownloadError) as e:
-            if "Requested format is not available" in str(e):
-                ydl_opts["format"] = "bestaudio" if mode == "audio" else "bestvideo+bestaudio"
+            ydl_opts = build_ydl_opts(fmt)
+            # Run yt-dlp in a thread
+            def _download():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     return ydl.extract_info(url, download=True)
-            else:
-                raise
 
-    try:
-        info = await asyncio.to_thread(_download)
-    except Exception as e:
-        await progress_callback(f"❌ Download failed: {e}")
-        raise
+            info = await asyncio.to_thread(_download)
+            break  # success
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Format {fmt} failed: {e}")
+            await progress_callback(f"⚠️ Retrying with another format...")
+            continue
+
+    if info is None:
+        await progress_callback(f"❌ All formats failed. Last error: {last_error}")
+        raise last_error
 
     # Extract metadata
     title = info.get('title', 'Video')

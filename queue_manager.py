@@ -2,6 +2,7 @@ import asyncio
 from collections import defaultdict
 from config import Config
 import logging
+import os
 
 from database import get_user, get_user_downloads_today, add_download_history
 from handlers.download import perform_download, upload_file
@@ -9,10 +10,10 @@ from handlers.download import perform_download, upload_file
 logger = logging.getLogger(__name__)
 
 class DownloadQueue:
-    def __init__(self, max_workers=3):
+    def __init__(self, max_workers=2):
         self.queue = asyncio.Queue()
-        self.active = defaultdict(int)          # user_id -> active tasks count
-        self.cancel_events = {}                 # user_id -> asyncio.Event
+        self.active = defaultdict(int)
+        self.cancel_events = {}
         self.max_workers = max_workers
         self.workers = []
         self.running = False
@@ -30,7 +31,10 @@ class DownloadQueue:
                 await self._process_task(task)
             except Exception as e:
                 logger.exception(f"Worker error for user {user_id}: {e}")
-                await task["callback"](f"❌ Error: {e}")
+                try:
+                    await task["callback"](f"❌ Error: {e}")
+                except:
+                    pass
             finally:
                 self.queue.task_done()
                 self.active[user_id] -= 1
@@ -39,7 +43,6 @@ class DownloadQueue:
         user_id = task["user_id"]
         callback = task["callback"]
 
-        # Check if user has cancelled
         if self._is_cancelled(user_id):
             self._clear_cancel(user_id)
             await callback("⏹️ Cancelled by user.")
@@ -50,7 +53,6 @@ class DownloadQueue:
             await callback("❌ You are banned.")
             return
 
-        # Check daily limit
         today_downloads = await get_user_downloads_today(user_id)
         daily_limit = user.get("daily_limit", Config.FREE_DAILY_LIMIT)
         if today_downloads >= daily_limit:
@@ -68,10 +70,8 @@ class DownloadQueue:
                 progress_callback=callback
             )
 
-            # Check cancellation again after download
             if self._is_cancelled(user_id):
                 self._clear_cancel(user_id)
-                # Cleanup downloaded files
                 if result and result.get("file_path"):
                     try: os.remove(result["file_path"])
                     except: pass
@@ -104,36 +104,23 @@ class DownloadQueue:
             await callback(f"❌ Error: {e}")
 
     def _is_cancelled(self, user_id):
-        """Return True if the user has an active cancellation event."""
         event = self.cancel_events.get(user_id)
         return event is not None and event.is_set()
 
     def _clear_cancel(self, user_id):
-        """Remove and clear cancellation event for user."""
         if user_id in self.cancel_events:
             self.cancel_events[user_id].clear()
             del self.cancel_events[user_id]
 
     def cancel_user(self, user_id):
-        """
-        Cancel all pending and active tasks for the user.
-        Returns True if any task was cancelled.
-        """
-        # Set cancellation event
         if user_id not in self.cancel_events:
             self.cancel_events[user_id] = asyncio.Event()
         self.cancel_events[user_id].set()
-
-        # Remove queued tasks for this user (they will be skipped when popped)
-        # We cannot remove from queue easily, but we'll just let them be skipped
-        # because _is_cancelled will return True.
-        # Return True if there was at least one task (active or queued)
         has_active = self.active.get(user_id, 0) > 0
         has_queued = any(t["user_id"] == user_id for t in self.queue._queue)
         return has_active or has_queued
 
     async def add_task(self, user_id, url, format_id, mode, callback):
-        # Clear any stale cancellation for this user
         if user_id in self.cancel_events:
             self.cancel_events[user_id].clear()
             del self.cancel_events[user_id]

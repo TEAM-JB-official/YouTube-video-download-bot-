@@ -3,6 +3,7 @@ import uuid
 import yt_dlp
 import aiohttp
 import aiofiles
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
@@ -10,7 +11,6 @@ from database import get_user, get_user_settings, get_user_downloads_today, add_
 from helpers import humanbytes, get_duration
 from handlers.force_sub import force_subscribe
 import logging
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ BASE_YDL_OPTS = {
     "extractor_args": {
         "youtube": {
             "player_client": ["android", "ios"],
-            "skip": ["hls", "dash"]  # avoids some problematic streams
+            "skip": ["hls", "dash"]
         }
     }
 }
@@ -67,7 +67,6 @@ async def youtube_handler(client, message):
                 await processing.edit_text("❌ Playlist is empty.")
                 return
 
-            # Cache playlist for later
             pl_key = str(uuid.uuid4())[:8]
             PLAYLIST_CACHE[pl_key] = {
                 'entries': entries,
@@ -92,7 +91,6 @@ async def youtube_handler(client, message):
             )
             return
 
-        # Single video
         await show_formats(client, processing, url, info)
 
     except Exception as e:
@@ -199,7 +197,6 @@ async def playlist_item(client, callback_query):
         await callback_query.answer("Invalid video.", show_alert=True)
         return
     video_url = f"https://youtu.be/{video_id}"
-    # Fake message to process
     class FakeMessage:
         text = video_url
         from_user = callback_query.from_user
@@ -240,12 +237,15 @@ async def playlist_all(client, callback_query):
 
     max_dl = min(len(entries), 10, remaining)
     count = 0
+    async def dummy_callback(text):
+        pass
+
     for entry in entries[:max_dl]:
         video_id = entry.get('id')
         if not video_id:
             continue
         video_url = f"https://youtu.be/{video_id}"
-        await queue.add_task(user_id, video_url, "bestvideo+bestaudio", "video", lambda t: None)
+        await queue.add_task(user_id, video_url, "bestvideo+bestaudio", "video", dummy_callback)
         count += 1
 
     await callback_query.message.edit_text(f"✅ Added {count} videos to the queue.")
@@ -262,60 +262,82 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
     os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
     output = f"{Config.DOWNLOAD_DIR}/{uid}.%(ext)s"
 
+    # Build format string
+    if mode == "video":
+        ydl_format = f"{format_id}+bestaudio/best" if format_id not in ["bestvideo+bestaudio", "bestvideo"] else "bestvideo+bestaudio"
+    else:
+        ydl_format = format_id if format_id != "bestaudio" else "bestaudio/best"
+
     ydl_opts = {
         **BASE_YDL_OPTS,
         "cookiefile": Config.COOKIE_FILE,
         "outtmpl": output,
         "merge_output_format": "mp4",
+        "format": ydl_format,
     }
     if mode == "audio":
         ydl_opts.update({
-            "format": format_id if format_id != "bestaudio" else "bestaudio/best",
             "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
         })
-    else:
-        ydl_opts["format"] = f"{format_id}+bestaudio/best" if format_id != "bestvideo" else "bestvideo+bestaudio"
 
     if Config.HTTP_PROXY:
         ydl_opts["proxy"] = Config.HTTP_PROXY
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        title = info.get('title', 'Video')
-        duration = info.get('duration')
-        width = info.get('width')
-        height = info.get('height')
-        thumb_url = info.get('thumbnail')
-        filesize = info.get('filesize') or info.get('filesize_approx')
-        ext = "mp3" if mode == "audio" else "mp4"
-        file_path = f"{Config.DOWNLOAD_DIR}/{uid}.{ext}"
-        if not os.path.exists(file_path):
-            for f in os.listdir(Config.DOWNLOAD_DIR):
-                if f.startswith(uid):
-                    file_path = os.path.join(Config.DOWNLOAD_DIR, f)
-                    break
+    # Run yt-dlp in a thread to avoid blocking the event loop
+    def _download():
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=True)
+        except yt_dlp.utils.DownloadError as e:
+            if "Requested format is not available" in str(e):
+                # Fallback to best quality
+                ydl_opts["format"] = "bestaudio" if mode == "audio" else "bestvideo+bestaudio"
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(url, download=True)
+            else:
+                raise
 
-        thumb_path = None
-        if thumb_url:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(thumb_url) as resp:
-                    if resp.status == 200:
-                        thumb_path = f"{Config.DOWNLOAD_DIR}/{uid}_thumb.jpg"
-                        async with aiofiles.open(thumb_path, "wb") as f:
-                            await f.write(await resp.read())
-        if thumb_path:
-            from fix_thumb import fix_thumb
-            thumb_path = await fix_thumb(thumb_path)
+    try:
+        info = await asyncio.to_thread(_download)
+    except Exception as e:
+        raise
 
-        return {
-            "file_path": file_path,
-            "thumb": thumb_path,
-            "title": title,
-            "duration": duration,
-            "width": width,
-            "height": height,
-            "size": filesize
-        }
+    # Extract metadata
+    title = info.get('title', 'Video')
+    duration = info.get('duration')
+    width = info.get('width')
+    height = info.get('height')
+    thumb_url = info.get('thumbnail')
+    filesize = info.get('filesize') or info.get('filesize_approx')
+    ext = "mp3" if mode == "audio" else "mp4"
+    file_path = f"{Config.DOWNLOAD_DIR}/{uid}.{ext}"
+    if not os.path.exists(file_path):
+        for f in os.listdir(Config.DOWNLOAD_DIR):
+            if f.startswith(uid):
+                file_path = os.path.join(Config.DOWNLOAD_DIR, f)
+                break
+
+    thumb_path = None
+    if thumb_url:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(thumb_url) as resp:
+                if resp.status == 200:
+                    thumb_path = f"{Config.DOWNLOAD_DIR}/{uid}_thumb.jpg"
+                    async with aiofiles.open(thumb_path, "wb") as f:
+                        await f.write(await resp.read())
+    if thumb_path:
+        from fix_thumb import fix_thumb
+        thumb_path = await fix_thumb(thumb_path)
+
+    return {
+        "file_path": file_path,
+        "thumb": thumb_path,
+        "title": title,
+        "duration": duration,
+        "width": width,
+        "height": height,
+        "size": filesize
+    }
 
 async def upload_file(client, user_id, file_path, thumb, title, duration, width, height, mode, callback):
     settings = await get_user_settings(user_id)

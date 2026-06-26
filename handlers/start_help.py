@@ -1,5 +1,6 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from database import get_user, update_user
 from handlers.force_sub import force_subscribe
 from config import Config
 import datetime
@@ -14,13 +15,30 @@ else:
 
 @Client.on_message(filters.private & filters.command("start"))
 async def start(client, message):
+    user_id = message.from_user.id
+
+    # 🔹 Register user in MongoDB if not exists
+    user = await get_user(user_id)
+    if not user:
+        await update_user(user_id, {
+            "username": message.from_user.username,
+            "first_name": message.from_user.first_name,
+            "join_date": datetime.datetime.now().isoformat(),
+            "is_premium": False,
+            "total_downloads": 0,
+            "daily_limit": Config.FREE_DAILY_LIMIT,
+            "size_limit_mb": Config.FREE_FILE_SIZE_MB,
+            "queue_limit": Config.FREE_QUEUE_LIMIT
+        })
+
     if Config.CHANNEL_ID:
         if await force_subscribe(client, message):
             return
-    user = message.from_user
-    text = f"**Hello {user.first_name}!** {wish}\n\n"
+
+    text = f"**Hello {message.from_user.first_name}!** {wish}\n\n"
     text += "Send me a YouTube link to download video/audio.\n"
     text += "Use /help for more info."
+
     await message.reply_text(
         text,
         reply_markup=InlineKeyboardMarkup([

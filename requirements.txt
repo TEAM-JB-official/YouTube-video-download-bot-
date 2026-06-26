@@ -1,0 +1,13 @@
+pyrogram==2.0.106
+tgcrypto==1.2.5
+yt-dlp==2024.7.21
+flask==2.3.3
+motor==3.3.2
+aiofiles==23.2.1
+aiohttp==3.9.5
+Pillow==10.4.0
+hachoir==3.2.0
+ffmpeg-python==0.2.0
+gunicorn==21.2.0
+pytz==2024.1
+python-dotenv==1.0.1

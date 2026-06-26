@@ -14,14 +14,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Caches
 FORMAT_CACHE = {}
 PLAYLIST_CACHE = {}
 
-# Robust YouTube URL regex
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
-# Common yt-dlp options to avoid SABR
 BASE_YDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
@@ -213,7 +210,6 @@ async def playlist_item(client, callback_query):
     except Exception as e:
         await callback_query.answer(f"Error: {e}", show_alert=True)
 
-# ---- Playlist All handlers ----
 @Client.on_callback_query(filters.regex(r"^pl_all_video\|"))
 async def playlist_all_video(client, callback_query):
     await playlist_all(client, callback_query, mode="video")
@@ -341,47 +337,37 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
             "format": fmt,
         }
         if mode == "audio":
-            opts.update({
-                "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
-            })
+            opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
         if Config.HTTP_PROXY:
             opts["proxy"] = Config.HTTP_PROXY
         return opts
 
-    # Define a list of formats to try, in order of preference
+    # Try multiple formats
     if mode == "video":
-        if format_id in ["bestvideo+bestaudio", "bestvideo"]:
-            formats_to_try = ["bestvideo+bestaudio", "bestvideo+bestaudio/best", "best"]
-        else:
-            formats_to_try = [
-                f"{format_id}+bestaudio/best",
-                "bestvideo+bestaudio",
-                "bestvideo+bestaudio/best",
-                "best"
-            ]
-    else:  # audio
-        if format_id == "bestaudio":
-            formats_to_try = ["bestaudio", "bestaudio/best", "best"]
-        else:
-            formats_to_try = [
-                format_id,
-                "bestaudio",
-                "bestaudio/best",
-                "best"
-            ]
+        formats_to_try = [
+            f"{format_id}+bestaudio/best" if format_id not in ["bestvideo+bestaudio", "bestvideo"] else "bestvideo+bestaudio",
+            "bestvideo+bestaudio",
+            "bestvideo+bestaudio/best",
+            "best"
+        ]
+    else:
+        formats_to_try = [
+            format_id if format_id != "bestaudio" else "bestaudio",
+            "bestaudio",
+            "bestaudio/best",
+            "best"
+        ]
 
     info = None
     last_error = None
     for fmt in formats_to_try:
         try:
             ydl_opts = build_ydl_opts(fmt)
-            # Run yt-dlp in a thread
             def _download():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     return ydl.extract_info(url, download=True)
-
             info = await asyncio.to_thread(_download)
-            break  # success
+            break
         except Exception as e:
             last_error = e
             logger.warning(f"Format {fmt} failed: {e}")
@@ -389,7 +375,17 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
             continue
 
     if info is None:
-        await progress_callback(f"❌ All formats failed. Last error: {last_error}")
+        # Check if the error is about cookies/age restriction
+        err_msg = str(last_error)
+        if "Requested format is not available" in err_msg:
+            # This often means the video requires login
+            await progress_callback(
+                "❌ This video is age‑restricted or requires login.\n"
+                "Please set up a valid `cookies.txt` file.\n"
+                "Get cookies from your browser (logged into YouTube)."
+            )
+        else:
+            await progress_callback(f"❌ All formats failed: {err_msg}")
         raise last_error
 
     # Extract metadata
@@ -432,7 +428,10 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
 async def upload_file(client, user_id, file_path, thumb, title, duration, width, height, mode, callback):
     settings = await get_user_settings(user_id)
     chat_id = settings.get("upload_chat_id") or user_id
-    caption = settings.get("caption") or f"📹 **{title}**\n📦 Size: {humanbytes(os.path.getsize(file_path))}"
+    # Remove any HTML tags from caption to avoid "Unclosed tags" warning
+    caption = settings.get("caption") or f"📹 {title}\n📦 Size: {humanbytes(os.path.getsize(file_path))}"
+    # Ensure no HTML is used (plain text)
+    caption = caption.replace("<", "(").replace(">", ")")
     thumb_file_id = settings.get("thumb_file_id")
     if thumb_file_id:
         thumb = thumb_file_id

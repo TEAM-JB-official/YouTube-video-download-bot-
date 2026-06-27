@@ -97,7 +97,7 @@ class DownloadQueue:
                     width=result.get("width"),
                     height=result.get("height"),
                     mode=task["mode"],
-                    cb=callback,
+                    callback=callback,   # ✅ correct parameter name
                     status_msg=status_msg,
                     original_msg=original_msg
                 )

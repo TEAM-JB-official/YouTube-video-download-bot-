@@ -1,4 +1,4 @@
-import os, uuid, yt_dlp, aiohttp, aiofiles, asyncio, logging
+import os, uuid, yt_dlp, aiohttp, aiofiles, asyncio, logging, random
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
@@ -10,17 +10,28 @@ logger = logging.getLogger(__name__)
 FORMAT_CACHE, PLAYLIST_CACHE = {}, {}
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
-def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None):
+# Get proxy from environment (HTTP_PROXY or HTTPS_PROXY)
+PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or Config.HTTP_PROXY or None
+
+# Rotating user-agents
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0",
+]
+
+def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None, extra_args=None):
     opts = {
         "quiet": True,
         "no_warnings": False,
         "format": fmt,
         "outtmpl": "%(id)s.%(ext)s",
         "merge_output_format": "mp4",
-        "cookiefile": cookiefile,  # always pass if provided
         "extractor_args": {
             "youtube": {
-                "player_client": clients or ["android", "ios", "web"],
+                "player_client": clients or ["android", "ios"],
                 "skip": ["hls", "dash"],
                 "player_skip": ["webpage", "configs"],
             }
@@ -28,38 +39,41 @@ def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None):
         "ignoreerrors": True,
         "no_check_certificate": True,
         "prefer_insecure": True,
+        "user_agent": random.choice(USER_AGENTS),
     }
+    if cookiefile:
+        opts["cookiefile"] = cookiefile
+    if extra_args:
+        opts["extractor_args"]["youtube"].update(extra_args)
     if proxy:
         opts["proxy"] = proxy
     if "audio" in fmt or fmt.startswith("bestaudio"):
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return opts
 
-async def extract_info(url, fmt="best", cookiefile=None, proxy=None):
-    def _extract():
-        opts = build_ydl_opts(fmt, cookiefile, proxy, ["android", "ios", "web"])
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=False)
+async def extract_with_clients(url, clients, cookiefile=None, proxy=None, extra_args=None):
     try:
+        opts = build_ydl_opts("best", cookiefile, proxy, clients, extra_args)
+        def _extract():
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
         return await asyncio.to_thread(_extract)
     except Exception as e:
-        logger.warning(f"Extraction failed: {e}")
+        logger.warning(f"Extraction with {clients} failed: {e}")
         return None
 
 async def get_video_info(url, cookiefile=None, proxy=None):
-    # Try android+ios first (with cookies), then web
-    for clients in (["android", "ios"], ["web"]):
-        try:
-            opts = build_ydl_opts("best", cookiefile, proxy, clients)
-            def _extract():
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    return ydl.extract_info(url, download=False)
-            info = await asyncio.to_thread(_extract)
-            if info:
-                return info
-        except Exception as e:
-            logger.warning(f"Client {clients} failed: {e}")
-            continue
+    strategies = [
+        (["android", "ios"], None, None),
+        (["web"], cookiefile, None),
+        (["android"], cookiefile, {"skip": ["webpage", "configs", "hls", "dash"], "player_skip": ["webpage", "configs"]}),
+        (["ios"], cookiefile, {"skip": ["webpage", "configs", "hls", "dash"], "player_skip": ["webpage", "configs"]}),
+        (["web"], cookiefile, {"skip": ["webpage", "configs", "hls", "dash"], "player_skip": ["webpage", "configs"]}),
+    ]
+    for clients, cf, extra in strategies:
+        info = await extract_with_clients(url, clients, cf, proxy, extra)
+        if info:
+            return info
     return None
 
 @Client.on_message(filters.private & filters.regex(YOUTUBE_REGEX))
@@ -74,12 +88,11 @@ async def youtube_handler(client, message):
         return await message.reply_text("You are banned.")
     processing = await message.reply_text("🔍 Fetching video info...")
     try:
-        info = await get_video_info(url, Config.COOKIE_FILE, Config.HTTP_PROXY)
+        info = await get_video_info(url, Config.COOKIE_FILE, PROXY)
         if not info:
             await processing.edit_text(
                 "❌ Could not fetch video info.\n"
-                "This may be due to expired cookies or bot protection.\n"
-                "Please replace `cookies.txt` with a fresh export from a logged-in browser."
+                "Try refreshing `cookies.txt` or using a proxy (set HTTP_PROXY)."
             )
             return
         if info.get('_type') == 'playlist':
@@ -174,7 +187,7 @@ async def playlist_item(client, cq):
     if not video_id:
         return await cq.answer("Invalid video.", show_alert=True)
     video_url = f"https://youtu.be/{video_id}"
-    info = await get_video_info(video_url, Config.COOKIE_FILE, Config.HTTP_PROXY)
+    info = await get_video_info(video_url, Config.COOKIE_FILE, PROXY)
     if info:
         await show_formats(client, cq.message, video_url, info)
         await cq.message.delete()
@@ -274,9 +287,16 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
     info = None
     last_err = None
     for fmt in formats:
-        for clients in (["android", "ios"], ["web"]):
+        for clients, use_cookies in [
+            (["android", "ios"], False),
+            (["web"], True),
+            (["android"], True),
+        ]:
             try:
-                opts = build_ydl_opts(fmt, Config.COOKIE_FILE, Config.HTTP_PROXY, clients)
+                extra = None
+                if use_cookies and clients == ["android"]:
+                    extra = {"skip": ["webpage", "configs", "hls", "dash"], "player_skip": ["webpage", "configs"]}
+                opts = build_ydl_opts(fmt, Config.COOKIE_FILE if use_cookies else None, PROXY, clients, extra)
                 opts["outtmpl"] = out
                 if mode=="audio":
                     opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]
@@ -294,7 +314,7 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
     if not info:
         err = str(last_err)
         if "Sign in" in err or "cookies" in err.lower():
-            await prog("❌ YouTube requires login (bot detection).\nPlease provide a valid `cookies.txt`.")
+            await prog("❌ YouTube requires login (bot detection).\nRefresh `cookies.txt` or use a proxy.")
         else:
             await prog(f"❌ All formats failed: {err}")
         raise last_err

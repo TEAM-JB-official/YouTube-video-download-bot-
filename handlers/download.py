@@ -74,6 +74,8 @@ async def get_video_info(url, cookiefile=None, proxy=None):
             return info
     return None
 
+# ==================== PROGRESS BAR CALLBACKS ====================
+
 async def download_progress_callback(current, total, message, start_time, status_msg):
     if total == 0:
         return
@@ -81,72 +83,37 @@ async def download_progress_callback(current, total, message, start_time, status
     speed = current / elapsed if elapsed > 0 else 0
     eta = (total - current) / speed if speed > 0 else 0
     percent = (current / total) * 100
-    
-    if speed > 10 * 1024 * 1024:
-        status = "🚀 Fast"
-    elif speed > 2 * 1024 * 1024:
-        status = "👍 Good"
-    elif speed > 500 * 1024:
-        status = "🐢 Slow"
-    else:
-        status = "🐌 Very Slow"
-    
+    if speed > 10*1024*1024: status = "🚀 Fast"
+    elif speed > 2*1024*1024: status = "👍 Good"
+    elif speed > 500*1024: status = "🐢 Slow"
+    else: status = "🐌 Very Slow"
     bar = progress_bar(percent)
     text = (
-        f"╭──────────────╮\n"
-        f"│ 📥 Downloading...\n"
-        f"├──────────────\n"
-        f"│\n"
-        f"│ {bar} {percent:.1f}%\n"
-        f"│\n"
-        f"│ 📦 Size: {humanbytes(current)} / {humanbytes(total)}\n"
-        f"│ ⚡ Speed: {humanbytes(speed)}/s\n"
-        f"│ ⏱️ ETA: {get_duration(eta)}\n"
-        f"│ 🔗 Status: {status}\n"
-        f"│\n"
-        f"╰──────────────╯"
+        f"╭──────────────╮\n│ 📥 Downloading...\n├──────────────\n│\n│ {bar} {percent:.1f}%\n│\n│ 📦 {humanbytes(current)} / {humanbytes(total)}\n"
+        f"│ ⚡ {humanbytes(speed)}/s\n│ ⏱️ {get_duration(eta)}\n│ 🔗 {status}\n│\n╰──────────────╯"
     )
-    try:
-        await status_msg.edit_text(text)
-    except Exception:
-        pass
+    try: await status_msg.edit_text(text)
+    except: pass
 
 async def upload_progress_callback(current, total, message, start_time, status_msg):
-    if total == 0:
-        return
+    if total == 0: return
     elapsed = time.time() - start_time
     speed = current / elapsed if elapsed > 0 else 0
     eta = (total - current) / speed if speed > 0 else 0
     percent = (current / total) * 100
-    
-    if speed > 10 * 1024 * 1024:
-        status = "🚀 Fast"
-    elif speed > 2 * 1024 * 1024:
-        status = "👍 Good"
-    elif speed > 500 * 1024:
-        status = "🐢 Slow"
-    else:
-        status = "🐌 Very Slow"
-    
+    if speed > 10*1024*1024: status = "🚀 Fast"
+    elif speed > 2*1024*1024: status = "👍 Good"
+    elif speed > 500*1024: status = "🐢 Slow"
+    else: status = "🐌 Very Slow"
     bar = progress_bar(percent)
     text = (
-        f"╭──────────────╮\n"
-        f"│ 📤 Uploading...\n"
-        f"├──────────────\n"
-        f"│\n"
-        f"│ {bar} {percent:.1f}%\n"
-        f"│\n"
-        f"│ 📦 Size: {humanbytes(current)} / {humanbytes(total)}\n"
-        f"│ ⚡ Speed: {humanbytes(speed)}/s\n"
-        f"│ ⏱️ ETA: {get_duration(eta)}\n"
-        f"│ 🔗 Status: {status}\n"
-        f"│\n"
-        f"╰──────────────╯"
+        f"╭──────────────╮\n│ 📤 Uploading...\n├──────────────\n│\n│ {bar} {percent:.1f}%\n│\n│ 📦 {humanbytes(current)} / {humanbytes(total)}\n"
+        f"│ ⚡ {humanbytes(speed)}/s\n│ ⏱️ {get_duration(eta)}\n│ 🔗 {status}\n│\n╰──────────────╯"
     )
-    try:
-        await status_msg.edit_text(text)
-    except Exception:
-        pass
+    try: await status_msg.edit_text(text)
+    except: pass
+
+# ==================== HANDLERS ====================
 
 @Client.on_message(filters.private & filters.regex(YOUTUBE_REGEX))
 async def youtube_handler(client, message):
@@ -162,10 +129,7 @@ async def youtube_handler(client, message):
     try:
         info = await get_video_info(url, Config.COOKIE_FILE, PROXY)
         if not info:
-            await processing.edit_text(
-                "❌ Could not fetch video info.\n"
-                "Try refreshing `cookies.txt` or using a proxy (set HTTP_PROXY)."
-            )
+            await processing.edit_text("❌ Could not fetch video info. Try refreshing `cookies.txt` or using a proxy.")
             return
         if info.get('_type') == 'playlist':
             entries = info.get('entries', [])
@@ -175,81 +139,57 @@ async def youtube_handler(client, message):
             PLAYLIST_CACHE[pl_key] = {'entries': entries, 'url': url, 'title': info.get('title', 'Playlist')}
             buttons = []
             for idx, entry in enumerate(entries[:20]):
-                if entry is None:
-                    continue
+                if entry is None: continue
                 title = entry.get('title', f'Video {idx+1}')
                 buttons.append([InlineKeyboardButton(f"{idx+1}. {title[:35]}...", callback_data=f"pl|{pl_key}|{idx}")])
             buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
             buttons.append([InlineKeyboardButton("🎵 Download All (Audio)", callback_data=f"pl_all_audio|{pl_key}")])
             buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
             await processing.edit_text(
-                f"**Playlist Detected**\n\nSelect video(s) or download all.\n"
-                f"Click a video number to download that single video.",
+                "**Playlist Detected**\n\nSelect a video or download all.",
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
             return
-        await show_formats(client, processing, url, info)
+        # Single video – show Video/Audio buttons only
+        await show_single_buttons(client, processing, url, info)
     except Exception as e:
         logger.exception("Error processing URL")
         await processing.edit_text(f"❌ Error: {e}")
 
-async def show_formats(client, message, url, info):
+async def show_single_buttons(client, message, url, info):
+    """Show two buttons: Video Download (best quality) and Audio Download."""
+    # Get best video format
     formats = info.get('formats', [])
-    vid_formats = []
-    audio_formats = []
+    best_video_fmt = None
+    best_audio_fmt = None
     for f in formats:
-        if f.get('vcodec') != 'none':
-            height = f.get('height')
-            if not height:
-                continue
-            has_audio = f.get('acodec') != 'none'
-            filesize = f.get('filesize') or f.get('filesize_approx')
-            size_text = humanbytes(filesize) if filesize else "Unknown"
-            existing = next((x for x in vid_formats if x['height'] == height), None)
-            if not existing:
-                vid_formats.append({
-                    'format_id': f['format_id'],
-                    'height': height,
-                    'label': f"{height}p ({size_text})",
-                    'filesize': filesize,
-                    'has_audio': has_audio
-                })
-            else:
-                if has_audio and not existing['has_audio']:
-                    existing['format_id'] = f['format_id']
-                    existing['label'] = f"{height}p ({size_text})"
-                    existing['filesize'] = filesize
-                    existing['has_audio'] = True
-    for f in formats:
-        if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-            filesize = f.get('filesize') or f.get('filesize_approx')
-            size_text = humanbytes(filesize) if filesize else "Unknown"
-            audio_formats.append({
-                'format_id': f['format_id'],
-                'label': f"🎵 {f.get('format_note', 'Audio')} ({size_text})",
-                'filesize': filesize
-            })
-
+        if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+            if not best_video_fmt or f.get('height', 0) > best_video_fmt.get('height', 0):
+                best_video_fmt = f
+        elif f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+            if not best_audio_fmt or f.get('filesize', 0) > best_audio_fmt.get('filesize', 0):
+                best_audio_fmt = f
+    # Generate key for cache
     key = str(uuid.uuid4())[:8]
-    FORMAT_CACHE[key] = {'url': url, 'info': info, 'vid_formats': vid_formats, 'audio_formats': audio_formats}
-
+    FORMAT_CACHE[key] = {'url': url, 'info': info}
     buttons = []
-    for fmt in sorted(vid_formats, key=lambda x: x['height'], reverse=True):
-        label = fmt['label']
-        if fmt['height'] >= 4320:
-            label = f"8K {label}"
-        elif fmt['height'] >= 2160:
-            label = f"4K {label}"
-        elif fmt['height'] >= 1440:
-            label = f"2K {label}"
-        buttons.append([InlineKeyboardButton(f"📹 {label}", callback_data=f"dl|{key}|{fmt['format_id']}|video")])
-    for fmt in audio_formats:
-        buttons.append([InlineKeyboardButton(fmt['label'], callback_data=f"dl|{key}|{fmt['format_id']}|audio")])
+    if best_video_fmt:
+        size = humanbytes(best_video_fmt.get('filesize') or best_video_fmt.get('filesize_approx') or 0)
+        buttons.append([InlineKeyboardButton(f"📹 Video ({size})", callback_data=f"dl|{key}|{best_video_fmt['format_id']}|video")])
+    else:
+        # fallback: use bestvideo+bestaudio
+        buttons.append([InlineKeyboardButton("📹 Video (Best)", callback_data=f"dl|{key}|bestvideo+bestaudio|video")])
+    if best_audio_fmt:
+        size = humanbytes(best_audio_fmt.get('filesize') or 0)
+        buttons.append([InlineKeyboardButton(f"🎵 Audio ({size})", callback_data=f"dl|{key}|{best_audio_fmt['format_id']}|audio")])
+    else:
+        buttons.append([InlineKeyboardButton("🎵 Audio (Best)", callback_data=f"dl|{key}|bestaudio|audio")])
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-
-    title = info.get('title', 'Video').replace('<', '(').replace('>', ')')
+    title = info.get('title', 'Video').replace('<','(').replace('>',')')
     dur = get_duration(info.get('duration')) if info.get('duration') else 'N/A'
-    await message.edit_text(f"**📺 {title}**\n⏱️ Duration: {dur}\n\nSelect format:", reply_markup=InlineKeyboardMarkup(buttons))
+    await message.edit_text(f"**📺 {title}**\n⏱️ Duration: {dur}\n\nChoose:", reply_markup=InlineKeyboardMarkup(buttons))
+
+# ==================== CALLBACKS ====================
 
 @Client.on_callback_query(filters.regex(r"^dl\|"))
 async def download_callback(client, cq):
@@ -258,14 +198,10 @@ async def download_callback(client, cq):
     if not data:
         return await cq.answer("Session expired. Resend link.", show_alert=True)
     url = data['url']
-    
     status_msg = await cq.message.edit_text("⏳ Adding to queue...")
     async def prog(text):
-        try:
-            await status_msg.edit_text(text)
-        except Exception:
-            pass
-    
+        try: await status_msg.edit_text(text)
+        except: pass
     user_id = cq.from_user.id
     user = await get_user(user_id)
     if not user or user.get("banned"):
@@ -274,7 +210,6 @@ async def download_callback(client, cq):
     limit = user.get("daily_limit", Config.FREE_DAILY_LIMIT)
     if today >= limit:
         return await prog(f"⚠️ Daily limit reached ({limit}).")
-    
     await client.queue.add_task(user_id, url, fmt_id, mode, prog, status_msg, cq.message)
 
 @Client.on_callback_query(filters.regex(r"^pl\|"))
@@ -296,22 +231,18 @@ async def playlist_item(client, cq):
     if not video_id:
         return await cq.answer("Invalid video.", show_alert=True)
     video_url = f"https://youtu.be/{video_id}"
-    
     info_msg = await cq.message.reply_text("🔍 Fetching video info...")
     info = await get_video_info(video_url, Config.COOKIE_FILE, PROXY)
     if info:
-        await show_formats(client, info_msg, video_url, info)
+        await show_single_buttons(client, info_msg, video_url, info)
         await cq.message.delete()
     else:
         await info_msg.edit_text("❌ Could not fetch video info.")
 
 @Client.on_callback_query(filters.regex(r"^pl_all_video\|"))
-async def playlist_all_video(client, cq):
-    await playlist_all(client, cq, "video")
-
+async def playlist_all_video(client, cq): await playlist_all(client, cq, "video")
 @Client.on_callback_query(filters.regex(r"^pl_all_audio\|"))
-async def playlist_all_audio(client, cq):
-    await playlist_all(client, cq, "audio")
+async def playlist_all_audio(client, cq): await playlist_all(client, cq, "audio")
 
 async def playlist_all(client, cq, mode):
     parts = cq.data.split("|")
@@ -342,12 +273,10 @@ async def playlist_all(client, cq, mode):
     completed = failed = 0
     lock = asyncio.Lock()
     current_text = status_msg.text
-
     async def update(inc_c=0, inc_f=0):
         nonlocal completed, failed, current_text
         async with lock:
-            completed += inc_c
-            failed += inc_f
+            completed += inc_c; failed += inc_f
             cur = completed + failed
             if cur <= total:
                 new_text = f"⚡ **Batch started**\n🎯 Mode: {'Video' if mode=='video' else 'Audio'}\n📦 Total: {total}\n⏳ Processing: {cur}/{total}\n✅ Completed: {completed}\n❌ Failed: {failed}\n\nPowered by Team JB ❤️"
@@ -357,15 +286,11 @@ async def playlist_all(client, cq, mode):
                 try:
                     await status_msg.edit_text(new_text)
                     current_text = new_text
-                except:
-                    pass
-
+                except: pass
     for idx, entry in enumerate(entries[:max_dl]):
-        if entry is None:
-            continue
+        if entry is None: continue
         video_id = entry.get('id')
-        if not video_id:
-            continue
+        if not video_id: continue
         video_url = f"https://youtu.be/{video_id}"
         async def cb(text, index=idx):
             await client.send_message(user_id, f"🎬 Video {index+1}/{total}: {text}")
@@ -379,12 +304,10 @@ async def playlist_all(client, cq, mode):
             link = await client.create_chat_invite_link(Config.CHANNEL_ID)
             await client.send_message(user_id, "🔔 **Join our channel for updates!**",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=link.invite_link)]]))
-        except:
-            pass
+        except: pass
 
 @Client.on_callback_query(filters.regex("cancel"))
-async def cancel_callback(client, cq):
-    await cq.message.delete()
+async def cancel_callback(client, cq): await cq.message.delete()
 
 # ==================== DOWNLOAD & UPLOAD HELPERS ====================
 
@@ -398,22 +321,16 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
     formats = [base_fmt, "bestvideo+bestaudio/best" if mode=="video" else "bestaudio/best", "best"]
     info = None
     last_err = None
-    
     for fmt in formats:
-        for clients, use_cookies in [
-            (["web"], True),
-            (["android", "ios"], False),
-            (["android"], True),
-        ]:
+        for clients, use_cookies in [(["web"], True), (["android","ios"], False), (["android"], True)]:
             try:
                 extra = None
                 if use_cookies and clients == ["android"]:
-                    extra = {"skip": ["webpage", "configs", "hls", "dash"], "player_skip": ["webpage", "configs"]}
+                    extra = {"skip": ["webpage","configs","hls","dash"], "player_skip": ["webpage","configs"]}
                 opts = build_ydl_opts(fmt, Config.COOKIE_FILE if use_cookies else None, PROXY, clients, extra)
                 opts["outtmpl"] = out
                 if mode=="audio":
                     opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]
-                
                 if status_msg and original_msg:
                     start_time = time.time()
                     def progress_hook(d):
@@ -421,12 +338,9 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
                             asyncio.create_task(download_progress_callback(
                                 d.get('downloaded_bytes', 0),
                                 d.get('total_bytes', d.get('total_bytes_estimate', 0)),
-                                original_msg,
-                                start_time,
-                                status_msg
+                                original_msg, start_time, status_msg
                             ))
                     opts["progress_hooks"] = [progress_hook]
-                
                 def _dl():
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         return ydl.extract_info(url, download=True)
@@ -436,17 +350,11 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
                 last_err = e
                 await prog("⚠️ Retrying...")
                 continue
-        if info:
-            break
-    
+        if info: break
     if not info:
         err = str(last_err)
-        if "Sign in" in err or "cookies" in err.lower():
-            await prog("❌ YouTube requires login (bot detection).\nRefresh `cookies.txt` or use a proxy.")
-        else:
-            await prog(f"❌ All formats failed: {err}")
+        await prog(f"❌ All formats failed: {err}")
         raise Exception(err)
-
     title = info.get('title', 'Video')
     duration = info.get('duration')
     width, height = info.get('width'), info.get('height')
@@ -459,7 +367,6 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
             if f.startswith(uid):
                 file_path = os.path.join(Config.DOWNLOAD_DIR, f)
                 break
-
     thumb_path = None
     if thumb_url:
         async with aiohttp.ClientSession() as sess:
@@ -471,23 +378,19 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
     if thumb_path:
         from fix_thumb import fix_thumb
         _, _, thumb_path = await fix_thumb(thumb_path)
-
     return {"file_path": file_path, "thumb": thumb_path, "title": title, "duration": duration,
             "width": width, "height": height, "size": filesize}
 
 async def upload_file(client, user_id, file_path, thumb, title, duration, width, height, mode, callback, status_msg=None, original_msg=None):
-    """Upload the file with progress bar. Parameter name is 'callback' to match queue_manager."""
     settings = await get_user_settings(user_id)
     chat_id = settings.get("upload_chat_id") or user_id
-    caption = (settings.get("caption") or f"📹 {title}\n📦 Size: {humanbytes(os.path.getsize(file_path))}").replace('<','(').replace('>',')')
+    caption = (settings.get("caption") or f"📹 {title}\n📦 {humanbytes(os.path.getsize(file_path))}").replace('<','(').replace('>',')')
     thumb = settings.get("thumb_file_id") or thumb
-
-    max_size = 2 * 1024 * 1024 * 1024  # 2GB
+    max_size = 2 * 1024 * 1024 * 1024
     file_size = os.path.getsize(file_path)
-
     try:
         if file_size > max_size:
-            await callback("📦 File is large (>2GB). Splitting into parts...")
+            await callback("📦 File >2GB. Splitting...")
             base_name = os.path.splitext(file_path)[0]
             part_path = f"{base_name}.part."
             subprocess.run(["split", "-b", "2G", file_path, part_path], check=True)
@@ -495,15 +398,13 @@ async def upload_file(client, user_id, file_path, thumb, title, duration, width,
             total_parts = len(parts)
             for idx, part_file in enumerate(parts, start=1):
                 part_full = os.path.join(Config.DOWNLOAD_DIR, part_file)
-                part_caption = f"📹 {title} (Part {idx}/{total_parts})\n📦 Size: {humanbytes(os.path.getsize(part_full))}"
-                if idx < total_parts:
-                    part_caption += "\n⬇️ Remaining parts will be sent shortly."
-                else:
-                    part_caption += "\n✅ All parts sent."
+                part_caption = f"📹 {title} (Part {idx}/{total_parts})\n📦 {humanbytes(os.path.getsize(part_full))}"
+                if idx < total_parts: part_caption += "\n⬇️ Remaining parts..."
+                else: part_caption += "\n✅ All parts sent."
                 if mode == "audio":
-                    await client.send_audio(chat_id=chat_id, audio=part_full, caption=part_caption, duration=duration, thumb=thumb if thumb else None)
+                    await client.send_audio(chat_id, audio=part_full, caption=part_caption, duration=duration, thumb=thumb if thumb else None)
                 else:
-                    await client.send_video(chat_id=chat_id, video=part_full, caption=part_caption, duration=duration,
+                    await client.send_video(chat_id, video=part_full, caption=part_caption, duration=duration,
                                             width=width, height=height, thumb=thumb if thumb else None, supports_streaming=True)
                 os.remove(part_full)
         else:
@@ -514,34 +415,17 @@ async def upload_file(client, user_id, file_path, thumb, title, duration, width,
                 )
             else:
                 progress_func = None
-            
             if mode == "audio":
-                await client.send_audio(
-                    chat_id=chat_id, 
-                    audio=file_path, 
-                    caption=caption, 
-                    duration=duration, 
-                    thumb=thumb if thumb else None,
-                    progress=progress_func
-                )
+                await client.send_audio(chat_id, audio=file_path, caption=caption, duration=duration,
+                                        thumb=thumb if thumb else None, progress=progress_func)
             else:
-                await client.send_video(
-                    chat_id=chat_id, 
-                    video=file_path, 
-                    caption=caption, 
-                    duration=duration,
-                    width=width, 
-                    height=height, 
-                    thumb=thumb if thumb else None, 
-                    supports_streaming=True,
-                    progress=progress_func
-                )
+                await client.send_video(chat_id, video=file_path, caption=caption, duration=duration,
+                                        width=width, height=height, thumb=thumb if thumb else None,
+                                        supports_streaming=True, progress=progress_func)
         await callback("✅ Upload completed!")
     except Exception as e:
         await callback(f"❌ Upload failed: {e}")
         raise
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        if thumb and isinstance(thumb, str) and os.path.exists(thumb):
-            os.remove(thumb)
+        if os.path.exists(file_path): os.remove(file_path)
+        if thumb and isinstance(thumb, str) and os.path.exists(thumb): os.remove(thumb)

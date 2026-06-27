@@ -64,13 +64,13 @@ class DownloadQueue:
         await callback("⬇️ Download started...")
 
         try:
-            # ✅ CORRECT: pass fmt_id (not format_id)
+            # ✅ CORRECT: pass 'prog=' instead of 'progress_callback='
             result = await perform_download(
                 user_id=user_id,
                 url=task["url"],
                 fmt_id=task["fmt_id"],
                 mode=task["mode"],
-                progress_callback=callback
+                prog=callback  # <-- this is the correct parameter name
             )
 
             if self._is_cancelled(user_id):
@@ -141,7 +141,7 @@ class DownloadQueue:
         await self.queue.put({
             "user_id": user_id,
             "url": url,
-            "fmt_id": fmt_id,          # ✅ key name matches the function parameter
+            "fmt_id": fmt_id,
             "mode": mode,
             "callback": callback
         })

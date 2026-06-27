@@ -17,6 +17,7 @@ def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None):
         "format": fmt,
         "outtmpl": "%(id)s.%(ext)s",
         "merge_output_format": "mp4",
+        "cookiefile": cookiefile,  # always pass if provided
         "extractor_args": {
             "youtube": {
                 "player_client": clients or ["android", "ios", "web"],
@@ -28,9 +29,6 @@ def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None):
         "no_check_certificate": True,
         "prefer_insecure": True,
     }
-    # Only set cookiefile for clients that support it (web)
-    if cookiefile and (not clients or "web" in clients):
-        opts["cookiefile"] = cookiefile
     if proxy:
         opts["proxy"] = proxy
     if "audio" in fmt or fmt.startswith("bestaudio"):
@@ -38,7 +36,6 @@ def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None):
     return opts
 
 async def extract_info(url, fmt="best", cookiefile=None, proxy=None):
-    """Run yt-dlp in a thread to avoid blocking."""
     def _extract():
         opts = build_ydl_opts(fmt, cookiefile, proxy, ["android", "ios", "web"])
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -50,11 +47,10 @@ async def extract_info(url, fmt="best", cookiefile=None, proxy=None):
         return None
 
 async def get_video_info(url, cookiefile=None, proxy=None):
-    """Try multiple clients; return info or None."""
-    # First try android+ios (no cookies) – often works for public videos
+    # Try android+ios first (with cookies), then web
     for clients in (["android", "ios"], ["web"]):
         try:
-            opts = build_ydl_opts("best", cookiefile if "web" in clients else None, proxy, clients)
+            opts = build_ydl_opts("best", cookiefile, proxy, clients)
             def _extract():
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.extract_info(url, download=False)
@@ -63,9 +59,7 @@ async def get_video_info(url, cookiefile=None, proxy=None):
                 return info
         except Exception as e:
             logger.warning(f"Client {clients} failed: {e}")
-            # If we get "Sign in" or "cookies" error, continue to next client
-            if "Sign in" in str(e) or "cookies" in str(e).lower():
-                continue
+            continue
     return None
 
 @Client.on_message(filters.private & filters.regex(YOUTUBE_REGEX))
@@ -84,8 +78,8 @@ async def youtube_handler(client, message):
         if not info:
             await processing.edit_text(
                 "❌ Could not fetch video info.\n"
-                "This may be due to YouTube bot protection.\n"
-                "Please ensure `cookies.txt` is valid (exported from a logged-in browser)."
+                "This may be due to expired cookies or bot protection.\n"
+                "Please replace `cookies.txt` with a fresh export from a logged-in browser."
             )
             return
         if info.get('_type') == 'playlist':
@@ -282,7 +276,7 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
     for fmt in formats:
         for clients in (["android", "ios"], ["web"]):
             try:
-                opts = build_ydl_opts(fmt, Config.COOKIE_FILE if "web" in clients else None, Config.HTTP_PROXY, clients)
+                opts = build_ydl_opts(fmt, Config.COOKIE_FILE, Config.HTTP_PROXY, clients)
                 opts["outtmpl"] = out
                 if mode=="audio":
                     opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]

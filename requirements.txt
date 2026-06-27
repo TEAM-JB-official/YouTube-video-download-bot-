@@ -1,6 +1,6 @@
 pyrogram==2.0.106
 tgcrypto==1.2.5
-yt-dlp>=2025.6.0
+yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git
 flask==2.3.3
 motor==3.3.2
 pymongo==4.5.0

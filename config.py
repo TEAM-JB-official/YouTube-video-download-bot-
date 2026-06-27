@@ -12,7 +12,7 @@ class Config:
     # MongoDB
     MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://rs92573993688:pVf4EeDuRi2o92ex@cluster0.9u29q.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
     DB_NAME = os.getenv("DB_NAME", "yt_bot")
-
+    
     # Force Subscribe Channel ID (must be integer, e.g., -100123456)
     CHANNEL_ID = os.getenv("CHANNEL_ID")
     if CHANNEL_ID:
@@ -20,9 +20,9 @@ class Config:
 
     # Free limits
     FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", 5))
-    FREE_FILE_SIZE_MB = int(os.getenv("FREE_FILE_SIZE_MB", 100))
-    FREE_QUEUE_LIMIT = int(os.getenv("FREE_QUEUE_LIMIT", 1))
-
+    FREE_FILE_SIZE_MB = int(os.getenv("FREE_FILE_SIZE_MB", 1900))
+    FREE_QUEUE_LIMIT = int(os.getenv("FREE_QUEUE_LIMIT", 3))
+    
     # Premium plans (size in MB, daily limit, queue limit)
     PREMIUM_PLANS = {
         "monthly": {"size_mb": 2048, "daily_limit": 100, "queue_limit": 5},

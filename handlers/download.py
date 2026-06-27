@@ -17,7 +17,6 @@ def get_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None, extra=None):
         "format": fmt,
         "outtmpl": "%(id)s.%(ext)s",
         "merge_output_format": "mp4",
-        "cookiefile": cookiefile or Config.COOKIE_FILE,
         "extractor_args": {
             "youtube": {
                 "player_client": clients or ["android", "ios"],
@@ -29,6 +28,12 @@ def get_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None, extra=None):
         "no_check_certificate": True,
         "prefer_insecure": True,
     }
+    # Only set cookiefile for web client (android/ios don't use cookies)
+    if cookiefile and clients and "web" in clients:
+        opts["cookiefile"] = cookiefile
+    elif cookiefile and (not clients or "web" in clients):
+        opts["cookiefile"] = cookiefile
+    # If clients is None or not web, we don't set cookiefile to avoid "skipping" warnings
     if extra:
         opts.update(extra)
     if proxy:
@@ -46,7 +51,9 @@ async def get_video_info(url, cookiefile=None, proxy=None):
     ]
     for clients in client_orders:
         try:
-            opts = get_ydl_opts("best", cookiefile, proxy, clients)
+            # For android/ios, don't pass cookiefile
+            cf = cookiefile if "web" in clients else None
+            opts = get_ydl_opts("best", cf, proxy, clients)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
@@ -80,6 +87,8 @@ async def youtube_handler(client, message):
             PLAYLIST_CACHE[pl_key] = {'entries': entries, 'url': url, 'title': info.get('title', 'Playlist')}
             buttons = []
             for idx, entry in enumerate(entries[:10]):
+                if entry is None:
+                    continue
                 title = entry.get('title', f'Video {idx+1}')
                 buttons.append([InlineKeyboardButton(f"{idx+1}. {title[:35]}...", callback_data=f"pl|{pl_key}|{idx}")])
             buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
@@ -158,7 +167,10 @@ async def playlist_item(client, cq):
     entries = pl['entries']
     if idx >= len(entries):
         return await cq.answer("Video not found.", show_alert=True)
-    video_id = entries[idx].get('id')
+    entry = entries[idx]
+    if entry is None:
+        return await cq.answer("Invalid video entry.", show_alert=True)
+    video_id = entry.get('id')
     if not video_id:
         return await cq.answer("Invalid video.", show_alert=True)
     video_url = f"https://youtu.be/{video_id}"
@@ -220,6 +232,8 @@ async def playlist_all(client, cq, mode):
                     f"✅ **Batch Complete!**\n🎯 Mode: {'Video' if mode=='video' else 'Audio'}\n📦 Total: {total}\n✅ Success: {completed}\n❌ Failed: {failed}\n\nPowered by Team JB ❤️"
                 )
     for idx, entry in enumerate(entries[:max_dl]):
+        if entry is None:
+            continue
         video_id = entry.get('id')
         if not video_id:
             continue
@@ -257,7 +271,8 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
     for fmt in formats:
         for clients in (["android"], ["ios"], ["web"]):
             try:
-                opts = get_ydl_opts(fmt, Config.COOKIE_FILE, Config.HTTP_PROXY, clients)
+                cf = Config.COOKIE_FILE if "web" in clients else None
+                opts = get_ydl_opts(fmt, cf, Config.HTTP_PROXY, clients)
                 opts["outtmpl"] = out
                 if mode=="audio":
                     opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]

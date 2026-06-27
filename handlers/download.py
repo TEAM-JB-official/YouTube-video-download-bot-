@@ -19,16 +19,11 @@ PLAYLIST_CACHE = {}
 
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
-# ------------------------------------------------------------------
-# Permanent fix: Use multiple player clients and robust extractors
-# ------------------------------------------------------------------
-def get_ydl_opts(format_spec, cookiefile=None, proxy=None, extra_args=None):
-    """
-    Build yt-dlp options with the latest extractor arguments.
-    - Uses a combination of player clients to bypass extraction failures.
-    - Includes 'skip' and 'player_client' fallbacks.
-    """
-    base = {
+# ------------------------------------------------------------
+# Build yt-dlp options with dynamic player clients
+# ------------------------------------------------------------
+def get_ydl_opts(format_spec, cookiefile=None, proxy=None, player_clients=None):
+    opts = {
         "quiet": True,
         "no_warnings": False,
         "format": format_spec,
@@ -37,9 +32,9 @@ def get_ydl_opts(format_spec, cookiefile=None, proxy=None, extra_args=None):
         "cookiefile": cookiefile or Config.COOKIE_FILE,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "web"],
+                "player_client": player_clients or ["android", "ios", "web"],
                 "skip": ["hls", "dash"],
-                "player_skip": ["webpage", "configs"],  # reduces fingerprint
+                "player_skip": ["webpage", "configs"],
             }
         },
         "ignoreerrors": True,
@@ -47,43 +42,34 @@ def get_ydl_opts(format_spec, cookiefile=None, proxy=None, extra_args=None):
         "prefer_insecure": True,
     }
     if proxy:
-        base["proxy"] = proxy
-    if extra_args:
-        base.update(extra_args)
-    # If format is audio, add postprocessor
+        opts["proxy"] = proxy
     if "audio" in format_spec or format_spec.startswith("bestaudio"):
-        base["postprocessors"] = [{
+        opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": "192"
         }]
-    return base
+    return opts
 
-# ------------------------------------------------------------------
-# Format listing with fallback (logs available formats)
-# ------------------------------------------------------------------
+# ------------------------------------------------------------
+# Fetch video info with fallback clients
+# ------------------------------------------------------------
 async def get_video_info(url, cookiefile=None, proxy=None):
-    """Extract video info with fallback clients and log available formats."""
-    for clients in (["android", "ios"], ["web"], ["android"]):
+    for clients in (["android", "ios"], ["web"]):
         try:
-            opts = get_ydl_opts("best", cookiefile, proxy)
-            opts["extractor_args"]["youtube"]["player_client"] = clients
+            opts = get_ydl_opts("best", cookiefile, proxy, clients)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
-                    # Log available formats for debugging (only if debug level)
-                    if logger.isEnabledFor(logging.DEBUG):
-                        formats = info.get('formats', [])
-                        logger.debug(f"Available formats: {[f.get('format_id') for f in formats]}")
                     return info
         except Exception as e:
             logger.warning(f"Client {clients} failed: {e}")
             continue
     return None
 
-# ------------------------------------------------------------------
-# Main message handler
-# ------------------------------------------------------------------
+# ------------------------------------------------------------
+# Main message handler (YouTube links)
+# ------------------------------------------------------------
 @Client.on_message(filters.private & filters.regex(YOUTUBE_REGEX))
 async def youtube_handler(client, message):
     if Config.CHANNEL_ID:
@@ -114,12 +100,14 @@ async def youtube_handler(client, message):
             if not entries:
                 await processing.edit_text("❌ Playlist is empty.")
                 return
+
             pl_key = str(uuid.uuid4())[:8]
             PLAYLIST_CACHE[pl_key] = {
                 'entries': entries,
                 'url': url,
                 'title': info.get('title', 'Playlist')
             }
+
             buttons = []
             for idx, entry in enumerate(entries[:10]):
                 title = entry.get('title', f'Video {idx+1}')
@@ -132,8 +120,9 @@ async def youtube_handler(client, message):
             buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
             buttons.append([InlineKeyboardButton("🎵 Download All (Audio)", callback_data=f"pl_all_audio|{pl_key}")])
             buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+
             await processing.edit_text(
-                f"**Playlist Detected**\n\nSelect a video or download all.",
+                "**Playlist Detected**\n\nSelect a video or download all.",
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
             return
@@ -157,9 +146,9 @@ async def youtube_handler(client, message):
         except:
             await message.reply_text(f"❌ Error: {e}")
 
-# ------------------------------------------------------------------
-# Show formats
-# ------------------------------------------------------------------
+# ------------------------------------------------------------
+# Show available formats
+# ------------------------------------------------------------
 async def show_formats(client, message, url, info):
     formats = info.get('formats', [])
     vid_formats = []
@@ -196,19 +185,17 @@ async def show_formats(client, message, url, info):
         buttons.append([InlineKeyboardButton(fmt['label'], callback_data=f"dl|{key}|{fmt['format_id']}|audio")])
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
 
-    title = info.get('title', 'Video')
+    title = info.get('title', 'Video').replace('<', '(').replace('>', ')')
     duration = info.get('duration')
     dur_text = get_duration(duration) if duration else 'N/A'
-    # Remove HTML from caption to avoid "Unclosed tags" warning
-    safe_title = title.replace("<", "(").replace(">", ")")
     await message.edit_text(
-        f"**📺 {safe_title}**\n⏱️ Duration: {dur_text}\n\nSelect format:",
+        f"**📺 {title}**\n⏱️ Duration: {dur_text}\n\nSelect format:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# ------------------------------------------------------------------
-# Callback handlers
-# ------------------------------------------------------------------
+# ------------------------------------------------------------
+# Download callback (single video)
+# ------------------------------------------------------------
 @Client.on_callback_query(filters.regex(r"^dl\|"))
 async def download_callback(client, callback_query):
     _, key, format_id, mode = callback_query.data.split("|")
@@ -241,6 +228,9 @@ async def download_callback(client, callback_query):
 
     await queue.add_task(user_id, url, format_id, mode, progress_callback_func)
 
+# ------------------------------------------------------------
+# Playlist item callback (single video from playlist)
+# ------------------------------------------------------------
 @Client.on_callback_query(filters.regex(r"^pl\|"))
 async def playlist_item(client, callback_query):
     parts = callback_query.data.split("|")
@@ -273,6 +263,9 @@ async def playlist_item(client, callback_query):
     except Exception as e:
         await callback_query.answer(f"Error: {e}", show_alert=True)
 
+# ------------------------------------------------------------
+# Playlist All – Video & Audio handlers
+# ------------------------------------------------------------
 @Client.on_callback_query(filters.regex(r"^pl_all_video\|"))
 async def playlist_all_video(client, callback_query):
     await playlist_all(client, callback_query, mode="video")
@@ -379,13 +372,16 @@ async def playlist_all(client, callback_query, mode):
         except Exception as e:
             logger.warning(f"Could not send channel invite: {e}")
 
+# ------------------------------------------------------------
+# Cancel callback
+# ------------------------------------------------------------
 @Client.on_callback_query(filters.regex("cancel"))
 async def cancel_callback(client, callback_query):
     await callback_query.message.delete()
 
-# ------------------------------------------------------------------
-# Download and upload functions (used by queue)
-# ------------------------------------------------------------------
+# ------------------------------------------------------------
+# Download function (called by queue worker)
+# ------------------------------------------------------------
 async def perform_download(user_id, url, format_id, mode, progress_callback):
     await progress_callback("⬇️ Downloading...")
     uid = str(uuid.uuid4())[:8]
@@ -397,22 +393,17 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
         base_fmt = f"{format_id}+bestaudio/best" if format_id not in ["bestvideo+bestaudio", "bestvideo"] else "bestvideo+bestaudio"
     else:
         base_fmt = format_id if format_id != "bestaudio" else "bestaudio"
-    # Ultimate fallback: bestvideo+bestaudio / bestaudio
     formats_to_try = [base_fmt, "bestvideo+bestaudio/best" if mode == "video" else "bestaudio/best", "best"]
 
     info = None
     last_error = None
-    # Try each format and client combination
     for fmt in formats_to_try:
-        for clients in (["android", "ios"], ["web"], ["android"]):
+        for clients in (["android", "ios"], ["web"]):
             try:
-                opts = get_ydl_opts(fmt, cookiefile=Config.COOKIE_FILE, proxy=Config.HTTP_PROXY)
+                opts = get_ydl_opts(fmt, cookiefile=Config.COOKIE_FILE, proxy=Config.HTTP_PROXY, player_clients=clients)
                 opts["outtmpl"] = output
-                # Ensure we have the postprocessor for audio
                 if mode == "audio":
                     opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
-                # Force the player client
-                opts["extractor_args"]["youtube"]["player_client"] = clients
 
                 def _download():
                     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -477,12 +468,15 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
         "size": filesize
     }
 
+# ------------------------------------------------------------
+# Upload function (called by queue worker)
+# ------------------------------------------------------------
 async def upload_file(client, user_id, file_path, thumb, title, duration, width, height, mode, callback):
     settings = await get_user_settings(user_id)
     chat_id = settings.get("upload_chat_id") or user_id
-    # Remove HTML from caption to avoid parse error
-    raw_caption = settings.get("caption") or f"📹 {title}\n📦 Size: {humanbytes(os.path.getsize(file_path))}"
-    caption = raw_caption.replace("<", "(").replace(">", ")")
+    # Remove HTML to avoid "Unclosed tags" warning
+    caption = settings.get("caption") or f"📹 {title}\n📦 Size: {humanbytes(os.path.getsize(file_path))}"
+    caption = caption.replace("<", "(").replace(">", ")")
     thumb_file_id = settings.get("thumb_file_id")
     if thumb_file_id:
         thumb = thumb_file_id

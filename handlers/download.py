@@ -19,16 +19,41 @@ PLAYLIST_CACHE = {}
 
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
+# Base options – we'll override player_client dynamically
 BASE_YDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "ios"],
             "skip": ["hls", "dash"]
         }
     }
 }
+
+def build_ydl_opts(format_spec, player_clients=None, cookiefile=None, proxy=None):
+    """Build yt-dlp options with given player clients."""
+    opts = {
+        **BASE_YDL_OPTS,
+        "format": format_spec,
+        "outtmpl": "%(id)s.%(ext)s",
+        "merge_output_format": "mp4",
+        "cookiefile": cookiefile or Config.COOKIE_FILE,
+        "extractor_args": {
+            "youtube": {
+                "player_client": player_clients or ["android", "ios"],
+                "skip": ["hls", "dash"]
+            }
+        }
+    }
+    if proxy:
+        opts["proxy"] = proxy
+    if format_spec.endswith("audio") or "audio" in format_spec:
+        opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192"
+        }]
+    return opts
 
 @Client.on_message(filters.private & filters.regex(YOUTUBE_REGEX))
 async def youtube_handler(client, message):
@@ -50,13 +75,18 @@ async def youtube_handler(client, message):
     processing = await message.reply_text("🔍 Fetching video information...")
 
     try:
-        ydl_opts = {
-            **BASE_YDL_OPTS,
-            "cookiefile": Config.COOKIE_FILE,
-            "extract_flat": "in_playlist",
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        # First try with android+ios, fallback to web if needed
+        for clients in (["android", "ios"], ["web"]):
+            try:
+                ydl_opts = build_ydl_opts("best", player_clients=clients)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                break
+            except Exception as e:
+                logger.warning(f"Player clients {clients} failed: {e}")
+                if clients == ["web"]:
+                    raise
+                continue
 
         if info.get('_type') == 'playlist':
             entries = info.get('entries', [])
@@ -199,12 +229,14 @@ async def playlist_item(client, callback_query):
     video_url = f"https://youtu.be/{video_id}"
 
     try:
-        ydl_opts = {
-            **BASE_YDL_OPTS,
-            "cookiefile": Config.COOKIE_FILE,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
+        for clients in (["android", "ios"], ["web"]):
+            try:
+                ydl_opts = build_ydl_opts("best", player_clients=clients)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(video_url, download=False)
+                break
+            except:
+                continue
         await show_formats(client, callback_query.message, video_url, info)
         await callback_query.message.delete()
     except Exception as e:
@@ -328,61 +360,49 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
     os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
     output = f"{Config.DOWNLOAD_DIR}/{uid}.%(ext)s"
 
-    def build_ydl_opts(fmt):
-        opts = {
-            **BASE_YDL_OPTS,
-            "cookiefile": Config.COOKIE_FILE,
-            "outtmpl": output,
-            "merge_output_format": "mp4",
-            "format": fmt,
-        }
-        if mode == "audio":
-            opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
-        if Config.HTTP_PROXY:
-            opts["proxy"] = Config.HTTP_PROXY
-        return opts
-
-    # Try multiple formats
+    # Build format string
     if mode == "video":
-        formats_to_try = [
-            f"{format_id}+bestaudio/best" if format_id not in ["bestvideo+bestaudio", "bestvideo"] else "bestvideo+bestaudio",
-            "bestvideo+bestaudio",
-            "bestvideo+bestaudio/best",
-            "best"
-        ]
+        base_fmt = f"{format_id}+bestaudio/best" if format_id not in ["bestvideo+bestaudio", "bestvideo"] else "bestvideo+bestaudio"
     else:
-        formats_to_try = [
-            format_id if format_id != "bestaudio" else "bestaudio",
-            "bestaudio",
-            "bestaudio/best",
-            "best"
-        ]
+        base_fmt = format_id if format_id != "bestaudio" else "bestaudio"
+
+    formats_to_try = [
+        base_fmt,
+        "bestvideo+bestaudio" if mode == "video" else "bestaudio",
+        "best"  # ultimate fallback
+    ]
 
     info = None
     last_error = None
     for fmt in formats_to_try:
-        try:
-            ydl_opts = build_ydl_opts(fmt)
-            def _download():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    return ydl.extract_info(url, download=True)
-            info = await asyncio.to_thread(_download)
+        for clients in (["android", "ios"], ["web"]):
+            try:
+                ydl_opts = build_ydl_opts(fmt, player_clients=clients, cookiefile=Config.COOKIE_FILE)
+                ydl_opts["outtmpl"] = output
+                if mode == "audio":
+                    ydl_opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+
+                def _download():
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        return ydl.extract_info(url, download=True)
+
+                info = await asyncio.to_thread(_download)
+                break
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Format {fmt} with clients {clients} failed: {e}")
+                await progress_callback(f"⚠️ Retrying with another format...")
+                continue
+        if info:
             break
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Format {fmt} failed: {e}")
-            await progress_callback(f"⚠️ Retrying with another format...")
-            continue
 
     if info is None:
-        # Check if the error is about cookies/age restriction
         err_msg = str(last_error)
-        if "Requested format is not available" in err_msg:
-            # This often means the video requires login
+        if "Requested format is not available" in err_msg or "Failed to extract" in err_msg:
             await progress_callback(
-                "❌ This video is age‑restricted or requires login.\n"
-                "Please set up a valid `cookies.txt` file.\n"
-                "Get cookies from your browser (logged into YouTube)."
+                "❌ YouTube is blocking the request.\n"
+                "Please ensure `cookies.txt` is valid and up-to-date.\n"
+                "Export cookies from a logged-in YouTube session."
             )
         else:
             await progress_callback(f"❌ All formats failed: {err_msg}")
@@ -428,9 +448,8 @@ async def perform_download(user_id, url, format_id, mode, progress_callback):
 async def upload_file(client, user_id, file_path, thumb, title, duration, width, height, mode, callback):
     settings = await get_user_settings(user_id)
     chat_id = settings.get("upload_chat_id") or user_id
-    # Remove any HTML tags from caption to avoid "Unclosed tags" warning
+    # Remove HTML to avoid "Unclosed tags" warning
     caption = settings.get("caption") or f"📹 {title}\n📦 Size: {humanbytes(os.path.getsize(file_path))}"
-    # Ensure no HTML is used (plain text)
     caption = caption.replace("<", "(").replace(">", ")")
     thumb_file_id = settings.get("thumb_file_id")
     if thumb_file_id:

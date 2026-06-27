@@ -12,20 +12,33 @@ YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playl
 
 def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None):
     opts = {
-        "quiet": True, "no_warnings": False, "format": fmt,
-        "outtmpl": "%(id)s.%(ext)s", "merge_output_format": "mp4",
-        "cookiefile": cookiefile or Config.COOKIE_FILE,
-        "extractor_args": {"youtube": {"player_client": clients or ["android", "ios", "web"],
-                                       "skip": ["hls", "dash"], "player_skip": ["webpage", "configs"]}},
-        "ignoreerrors": True, "no_check_certificate": True, "prefer_insecure": True
+        "quiet": True,
+        "no_warnings": False,
+        "format": fmt,
+        "outtmpl": "%(id)s.%(ext)s",
+        "merge_output_format": "mp4",
+        "extractor_args": {
+            "youtube": {
+                "player_client": clients or ["android", "ios", "web"],
+                "skip": ["hls", "dash"],
+                "player_skip": ["webpage", "configs"],
+            }
+        },
+        "ignoreerrors": True,
+        "no_check_certificate": True,
+        "prefer_insecure": True,
     }
-    if proxy: opts["proxy"] = proxy
+    # Only set cookiefile for clients that support it (web)
+    if cookiefile and (not clients or "web" in clients):
+        opts["cookiefile"] = cookiefile
+    if proxy:
+        opts["proxy"] = proxy
     if "audio" in fmt or fmt.startswith("bestaudio"):
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return opts
 
 async def extract_info(url, fmt="best", cookiefile=None, proxy=None):
-    """Run yt-dlp in a thread to avoid blocking the event loop."""
+    """Run yt-dlp in a thread to avoid blocking."""
     def _extract():
         opts = build_ydl_opts(fmt, cookiefile, proxy, ["android", "ios", "web"])
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -38,32 +51,33 @@ async def extract_info(url, fmt="best", cookiefile=None, proxy=None):
 
 async def get_video_info(url, cookiefile=None, proxy=None):
     """Try multiple clients; return info or None."""
+    # First try android+ios (no cookies) – often works for public videos
     for clients in (["android", "ios"], ["web"]):
         try:
-            opts = build_ydl_opts("best", cookiefile, proxy, clients)
+            opts = build_ydl_opts("best", cookiefile if "web" in clients else None, proxy, clients)
             def _extract():
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.extract_info(url, download=False)
             info = await asyncio.to_thread(_extract)
-            if info: return info
+            if info:
+                return info
         except Exception as e:
             logger.warning(f"Client {clients} failed: {e}")
+            # If we get "Sign in" or "cookies" error, continue to next client
             if "Sign in" in str(e) or "cookies" in str(e).lower():
-                # If we get a login error, we'll try without cookies for android/ios
-                if clients != ["web"]:
-                    continue
-                else:
-                    # With web and still needs login, return None
-                    pass
+                continue
     return None
 
 @Client.on_message(filters.private & filters.regex(YOUTUBE_REGEX))
 async def youtube_handler(client, message):
-    if Config.CHANNEL_ID and await force_subscribe(client, message): return
+    if Config.CHANNEL_ID and await force_subscribe(client, message):
+        return
     url, user_id = message.text.strip(), message.from_user.id
     user = await get_user(user_id)
-    if not user: return await message.reply_text("Please /start first.")
-    if user.get("banned"): return await message.reply_text("You are banned.")
+    if not user:
+        return await message.reply_text("Please /start first.")
+    if user.get("banned"):
+        return await message.reply_text("You are banned.")
     processing = await message.reply_text("🔍 Fetching video info...")
     try:
         info = await get_video_info(url, Config.COOKIE_FILE, Config.HTTP_PROXY)
@@ -76,12 +90,14 @@ async def youtube_handler(client, message):
             return
         if info.get('_type') == 'playlist':
             entries = info.get('entries', [])
-            if not entries: return await processing.edit_text("❌ Playlist empty.")
+            if not entries:
+                return await processing.edit_text("❌ Playlist empty.")
             pl_key = str(uuid.uuid4())[:8]
             PLAYLIST_CACHE[pl_key] = {'entries': entries, 'url': url, 'title': info.get('title', 'Playlist')}
             buttons = []
             for idx, entry in enumerate(entries[:10]):
-                if entry is None: continue
+                if entry is None:
+                    continue
                 title = entry.get('title', f'Video {idx+1}')
                 buttons.append([InlineKeyboardButton(f"{idx+1}. {title[:35]}...", callback_data=f"pl|{pl_key}|{idx}")])
             buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
@@ -126,33 +142,43 @@ async def show_formats(client, message, url, info):
 async def download_callback(client, cq):
     _, key, fmt_id, mode = cq.data.split("|")
     data = FORMAT_CACHE.get(key)
-    if not data: return await cq.answer("Session expired. Resend link.", show_alert=True)
+    if not data:
+        return await cq.answer("Session expired. Resend link.", show_alert=True)
     url = data['url']
     await cq.message.edit_text("⏳ Adding to queue...")
     async def prog(text):
-        try: await cq.message.edit_text(text)
-        except: pass
+        try:
+            await cq.message.edit_text(text)
+        except:
+            pass
     user_id = cq.from_user.id
     user = await get_user(user_id)
-    if not user or user.get("banned"): return await prog("❌ Banned.")
+    if not user or user.get("banned"):
+        return await prog("❌ Banned.")
     today = await get_user_downloads_today(user_id)
     limit = user.get("daily_limit", Config.FREE_DAILY_LIMIT)
-    if today >= limit: return await prog(f"⚠️ Daily limit reached ({limit}).")
+    if today >= limit:
+        return await prog(f"⚠️ Daily limit reached ({limit}).")
     await client.queue.add_task(user_id, url, fmt_id, mode, prog)
 
 @Client.on_callback_query(filters.regex(r"^pl\|"))
 async def playlist_item(client, cq):
     parts = cq.data.split("|")
-    if len(parts) < 3: return await cq.answer("Invalid data.", show_alert=True)
+    if len(parts) < 3:
+        return await cq.answer("Invalid data.", show_alert=True)
     pl_key, idx = parts[1], int(parts[2])
     pl = PLAYLIST_CACHE.get(pl_key)
-    if not pl: return await cq.answer("Playlist expired.", show_alert=True)
+    if not pl:
+        return await cq.answer("Playlist expired.", show_alert=True)
     entries = pl['entries']
-    if idx >= len(entries): return await cq.answer("Video not found.", show_alert=True)
+    if idx >= len(entries):
+        return await cq.answer("Video not found.", show_alert=True)
     entry = entries[idx]
-    if entry is None: return await cq.answer("Invalid video entry.", show_alert=True)
+    if entry is None:
+        return await cq.answer("Invalid video entry.", show_alert=True)
     video_id = entry.get('id')
-    if not video_id: return await cq.answer("Invalid video.", show_alert=True)
+    if not video_id:
+        return await cq.answer("Invalid video.", show_alert=True)
     video_url = f"https://youtu.be/{video_id}"
     info = await get_video_info(video_url, Config.COOKIE_FILE, Config.HTTP_PROXY)
     if info:
@@ -162,25 +188,33 @@ async def playlist_item(client, cq):
         await cq.answer("Could not fetch video info.", show_alert=True)
 
 @Client.on_callback_query(filters.regex(r"^pl_all_video\|"))
-async def playlist_all_video(client, cq): await playlist_all(client, cq, "video")
+async def playlist_all_video(client, cq):
+    await playlist_all(client, cq, "video")
+
 @Client.on_callback_query(filters.regex(r"^pl_all_audio\|"))
-async def playlist_all_audio(client, cq): await playlist_all(client, cq, "audio")
+async def playlist_all_audio(client, cq):
+    await playlist_all(client, cq, "audio")
 
 async def playlist_all(client, cq, mode):
     parts = cq.data.split("|")
-    if len(parts) < 2: return await cq.answer("Invalid data.", show_alert=True)
+    if len(parts) < 2:
+        return await cq.answer("Invalid data.", show_alert=True)
     pl_key = parts[1]
     pl = PLAYLIST_CACHE.get(pl_key)
-    if not pl: return await cq.answer("Playlist expired.", show_alert=True)
+    if not pl:
+        return await cq.answer("Playlist expired.", show_alert=True)
     entries = pl['entries']
-    if not entries: return await cq.answer("No entries.", show_alert=True)
+    if not entries:
+        return await cq.answer("No entries.", show_alert=True)
     user_id = cq.from_user.id
     user = await get_user(user_id)
-    if not user or user.get("banned"): return await cq.message.edit_text("❌ Banned.")
+    if not user or user.get("banned"):
+        return await cq.message.edit_text("❌ Banned.")
     today = await get_user_downloads_today(user_id)
     limit = user.get("daily_limit", Config.FREE_DAILY_LIMIT)
     rem = limit - today
-    if rem <= 0: return await cq.message.edit_text(f"⚠️ Daily limit reached ({limit}).")
+    if rem <= 0:
+        return await cq.message.edit_text(f"⚠️ Daily limit reached ({limit}).")
     max_dl = min(len(entries), 10, rem)
     total = max_dl
     status_msg = await cq.message.edit_text(
@@ -194,7 +228,8 @@ async def playlist_all(client, cq, mode):
     async def update(inc_c=0, inc_f=0):
         nonlocal completed, failed, current_text
         async with lock:
-            completed += inc_c; failed += inc_f
+            completed += inc_c
+            failed += inc_f
             cur = completed + failed
             if cur <= total:
                 new_text = f"⚡ **Batch started**\n🎯 Mode: {'Video' if mode=='video' else 'Audio'}\n📦 Total: {total}\n⏳ Processing: {cur}/{total}\n✅ Completed: {completed}\n❌ Failed: {failed}\n\nPowered by Team JB ❤️"
@@ -208,9 +243,11 @@ async def playlist_all(client, cq, mode):
                     pass
 
     for idx, entry in enumerate(entries[:max_dl]):
-        if entry is None: continue
+        if entry is None:
+            continue
         video_id = entry.get('id')
-        if not video_id: continue
+        if not video_id:
+            continue
         video_url = f"https://youtu.be/{video_id}"
         async def cb(text, index=idx):
             await client.send_message(user_id, f"🎬 Video {index+1}/{total}: {text}")
@@ -224,10 +261,12 @@ async def playlist_all(client, cq, mode):
             link = await client.create_chat_invite_link(Config.CHANNEL_ID)
             await client.send_message(user_id, "🔔 **Join our channel for updates!**",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url=link.invite_link)]]))
-        except: pass
+        except:
+            pass
 
 @Client.on_callback_query(filters.regex("cancel"))
-async def cancel_callback(client, cq): await cq.message.delete()
+async def cancel_callback(client, cq):
+    await cq.message.delete()
 
 # ---- Download & Upload helpers ----
 async def perform_download(user_id, url, fmt_id, mode, prog):
@@ -243,7 +282,7 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
     for fmt in formats:
         for clients in (["android", "ios"], ["web"]):
             try:
-                opts = build_ydl_opts(fmt, Config.COOKIE_FILE, Config.HTTP_PROXY, clients)
+                opts = build_ydl_opts(fmt, Config.COOKIE_FILE if "web" in clients else None, Config.HTTP_PROXY, clients)
                 opts["outtmpl"] = out
                 if mode=="audio":
                     opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]
@@ -256,7 +295,8 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
                 last_err = e
                 await prog("⚠️ Retrying...")
                 continue
-        if info: break
+        if info:
+            break
     if not info:
         err = str(last_err)
         if "Sign in" in err or "cookies" in err.lower():
@@ -303,5 +343,7 @@ async def upload_file(client, user_id, file_path, thumb, title, duration, width,
                                     width=width, height=height, thumb=thumb if thumb else None, supports_streaming=True)
         await cb("✅ Upload completed!")
     finally:
-        if os.path.exists(file_path): os.remove(file_path)
-        if thumb and os.path.exists(thumb): os.remove(thumb)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if thumb and os.path.exists(thumb):
+            os.remove(thumb)

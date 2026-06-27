@@ -74,8 +74,6 @@ async def get_video_info(url, cookiefile=None, proxy=None):
             return info
     return None
 
-# ==================== PROGRESS BAR FUNCTIONS ====================
-
 async def download_progress_callback(current, total, message, start_time, status_msg):
     if total == 0:
         return
@@ -150,8 +148,6 @@ async def upload_progress_callback(current, total, message, start_time, status_m
     except Exception:
         pass
 
-# ==================== MAIN HANDLERS ====================
-
 @Client.on_message(filters.private & filters.regex(YOUTUBE_REGEX))
 async def youtube_handler(client, message):
     if Config.CHANNEL_ID and await force_subscribe(client, message):
@@ -178,13 +174,10 @@ async def youtube_handler(client, message):
             pl_key = str(uuid.uuid4())[:8]
             PLAYLIST_CACHE[pl_key] = {'entries': entries, 'url': url, 'title': info.get('title', 'Playlist')}
             buttons = []
-            # Show up to 20 video buttons
             for idx, entry in enumerate(entries[:20]):
                 if entry is None:
                     continue
                 title = entry.get('title', f'Video {idx+1}')
-                # Use a short ID to avoid callback length issues
-                vid_id = entry.get('id', '')
                 buttons.append([InlineKeyboardButton(f"{idx+1}. {title[:35]}...", callback_data=f"pl|{pl_key}|{idx}")])
             buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
             buttons.append([InlineKeyboardButton("🎵 Download All (Audio)", callback_data=f"pl_all_audio|{pl_key}")])
@@ -394,6 +387,93 @@ async def cancel_callback(client, cq):
     await cq.message.delete()
 
 # ==================== DOWNLOAD & UPLOAD HELPERS ====================
+
+async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, original_msg=None):
+    await prog("⬇️ Downloading...")
+    uid = str(uuid.uuid4())[:8]
+    os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
+    out = f"{Config.DOWNLOAD_DIR}/{uid}.%(ext)s"
+    base_fmt = (f"{fmt_id}+bestaudio/best" if mode=="video" and fmt_id not in ["bestvideo+bestaudio","bestvideo"]
+                else (fmt_id if mode=="audio" else "bestvideo+bestaudio"))
+    formats = [base_fmt, "bestvideo+bestaudio/best" if mode=="video" else "bestaudio/best", "best"]
+    info = None
+    last_err = None
+    
+    for fmt in formats:
+        for clients, use_cookies in [
+            (["web"], True),
+            (["android", "ios"], False),
+            (["android"], True),
+        ]:
+            try:
+                extra = None
+                if use_cookies and clients == ["android"]:
+                    extra = {"skip": ["webpage", "configs", "hls", "dash"], "player_skip": ["webpage", "configs"]}
+                opts = build_ydl_opts(fmt, Config.COOKIE_FILE if use_cookies else None, PROXY, clients, extra)
+                opts["outtmpl"] = out
+                if mode=="audio":
+                    opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]
+                
+                if status_msg and original_msg:
+                    start_time = time.time()
+                    def progress_hook(d):
+                        if d['status'] == 'downloading':
+                            asyncio.create_task(download_progress_callback(
+                                d.get('downloaded_bytes', 0),
+                                d.get('total_bytes', d.get('total_bytes_estimate', 0)),
+                                original_msg,
+                                start_time,
+                                status_msg
+                            ))
+                    opts["progress_hooks"] = [progress_hook]
+                
+                def _dl():
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        return ydl.extract_info(url, download=True)
+                info = await asyncio.to_thread(_dl)
+                break
+            except Exception as e:
+                last_err = e
+                await prog("⚠️ Retrying...")
+                continue
+        if info:
+            break
+    
+    if not info:
+        err = str(last_err)
+        if "Sign in" in err or "cookies" in err.lower():
+            await prog("❌ YouTube requires login (bot detection).\nRefresh `cookies.txt` or use a proxy.")
+        else:
+            await prog(f"❌ All formats failed: {err}")
+        raise Exception(err)
+
+    title = info.get('title', 'Video')
+    duration = info.get('duration')
+    width, height = info.get('width'), info.get('height')
+    thumb_url = info.get('thumbnail')
+    filesize = info.get('filesize') or info.get('filesize_approx')
+    ext = "mp3" if mode=="audio" else "mp4"
+    file_path = f"{Config.DOWNLOAD_DIR}/{uid}.{ext}"
+    if not os.path.exists(file_path):
+        for f in os.listdir(Config.DOWNLOAD_DIR):
+            if f.startswith(uid):
+                file_path = os.path.join(Config.DOWNLOAD_DIR, f)
+                break
+
+    thumb_path = None
+    if thumb_url:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(thumb_url) as resp:
+                if resp.status == 200:
+                    thumb_path = f"{Config.DOWNLOAD_DIR}/{uid}_thumb.jpg"
+                    async with aiofiles.open(thumb_path, "wb") as f:
+                        await f.write(await resp.read())
+    if thumb_path:
+        from fix_thumb import fix_thumb
+        _, _, thumb_path = await fix_thumb(thumb_path)
+
+    return {"file_path": file_path, "thumb": thumb_path, "title": title, "duration": duration,
+            "width": width, "height": height, "size": filesize}
 
 async def upload_file(client, user_id, file_path, thumb, title, duration, width, height, mode, callback, status_msg=None, original_msg=None):
     """Upload the file with progress bar. Parameter name is 'callback' to match queue_manager."""

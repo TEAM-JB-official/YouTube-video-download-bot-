@@ -123,7 +123,6 @@ async def show_formats(client, message, url, info):
     formats = info.get('formats', [])
     vid_formats = []
     audio_formats = []
-    # Collect video formats with distinct heights, preferring those with audio
     for f in formats:
         if f.get('vcodec') != 'none':
             height = f.get('height')
@@ -142,13 +141,11 @@ async def show_formats(client, message, url, info):
                     'has_audio': has_audio
                 })
             else:
-                # Prefer formats with audio
                 if has_audio and not existing['has_audio']:
                     existing['format_id'] = f['format_id']
                     existing['label'] = f"{height}p ({size_text})"
                     existing['filesize'] = filesize
                     existing['has_audio'] = True
-    # Audio only formats
     for f in formats:
         if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
             filesize = f.get('filesize') or f.get('filesize_approx')
@@ -163,7 +160,6 @@ async def show_formats(client, message, url, info):
     FORMAT_CACHE[key] = {'url': url, 'info': info, 'vid_formats': vid_formats, 'audio_formats': audio_formats}
 
     buttons = []
-    # Sort video formats by height descending (highest first)
     for fmt in sorted(vid_formats, key=lambda x: x['height'], reverse=True):
         buttons.append([InlineKeyboardButton(f"📹 {fmt['label']}", callback_data=f"dl|{key}|{fmt['format_id']}|video")])
     for fmt in audio_formats:
@@ -371,7 +367,8 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
                         await f.write(await resp.read())
     if thumb_path:
         from fix_thumb import fix_thumb
-        thumb_path = await fix_thumb(thumb_path)
+        # fix_thumb returns (width, height, thumb_path) – we only need the path
+        _, _, thumb_path = await fix_thumb(thumb_path)
 
     return {"file_path": file_path, "thumb": thumb_path, "title": title, "duration": duration,
             "width": width, "height": height, "size": filesize}
@@ -391,9 +388,7 @@ async def upload_file(client, user_id, file_path, thumb, title, duration, width,
             await cb("📦 File is large (>2GB). Splitting into parts...")
             base_name = os.path.splitext(file_path)[0]
             part_path = f"{base_name}.part."
-            # Use split command (available in Linux)
             subprocess.run(["split", "-b", "2G", file_path, part_path], check=True)
-            # Find parts
             parts = sorted([f for f in os.listdir(Config.DOWNLOAD_DIR) if f.startswith(os.path.basename(part_path))])
             total_parts = len(parts)
             for idx, part_file in enumerate(parts, start=1):
@@ -410,7 +405,6 @@ async def upload_file(client, user_id, file_path, thumb, title, duration, width,
                                             width=width, height=height, thumb=thumb if thumb else None, supports_streaming=True)
                 os.remove(part_full)
         else:
-            # Normal upload
             if mode == "audio":
                 await client.send_audio(chat_id=chat_id, audio=file_path, caption=caption, duration=duration, thumb=thumb if thumb else None)
             else:
@@ -421,8 +415,8 @@ async def upload_file(client, user_id, file_path, thumb, title, duration, width,
         await cb(f"❌ Upload failed: {e}")
         raise
     finally:
-        # Cleanup
         if os.path.exists(file_path):
             os.remove(file_path)
-        if thumb and os.path.exists(thumb):
+        # Ensure thumb is a string before checking existence
+        if thumb and isinstance(thumb, str) and os.path.exists(thumb):
             os.remove(thumb)

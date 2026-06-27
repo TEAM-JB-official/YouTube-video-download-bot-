@@ -2,19 +2,20 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install system dependencies: ffmpeg + build tools (for compiling C extensions)
+# Install ffmpeg, build tools, and git
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     gcc \
     g++ \
     make \
     python3-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip, setuptools, wheel (prevents many build issues)
+# Upgrade pip
 RUN pip install --upgrade pip setuptools wheel
 
-# Copy and install Python dependencies
+# Copy requirements and install (yt-dlp will be installed from git)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

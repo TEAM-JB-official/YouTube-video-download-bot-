@@ -31,7 +31,7 @@ def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None, extra_args=No
         "merge_output_format": "mp4",
         "extractor_args": {
             "youtube": {
-                "player_client": clients or ["android", "ios"],
+                "player_client": clients or ["android", "web"],
                 "skip": ["hls", "dash"],
                 "player_skip": ["webpage", "configs"],
             }

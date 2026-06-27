@@ -100,12 +100,11 @@ async def youtube_handler(client, message):
             pl_key = str(uuid.uuid4())[:8]
             PLAYLIST_CACHE[pl_key] = {'entries': entries, 'url': url, 'title': info.get('title', 'Playlist')}
             buttons = []
-            for idx, entry in enumerate(entries[:20]):  # show up to 20
+            for idx, entry in enumerate(entries[:20]):
                 if entry is None:
                     continue
                 title = entry.get('title', f'Video {idx+1}')
                 buttons.append([InlineKeyboardButton(f"{idx+1}. {title[:35]}...", callback_data=f"pl|{pl_key}|{idx}")])
-            # Add buttons to select all, select by range? For simplicity, we add "Download All" and "Cancel"
             buttons.append([InlineKeyboardButton("📥 Download All (Video)", callback_data=f"pl_all_video|{pl_key}")])
             buttons.append([InlineKeyboardButton("🎵 Download All (Audio)", callback_data=f"pl_all_audio|{pl_key}")])
             buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
@@ -124,19 +123,15 @@ async def show_formats(client, message, url, info):
     formats = info.get('formats', [])
     vid_formats = []
     audio_formats = []
-    # Collect all video formats (with both video+audio or video only)
+    # Collect video formats with distinct heights, preferring those with audio
     for f in formats:
         if f.get('vcodec') != 'none':
             height = f.get('height')
-            if height:
-                label = f"{height}p"
-            else:
+            if not height:
                 continue
-            # Check if it has audio or not
             has_audio = f.get('acodec') != 'none'
             filesize = f.get('filesize') or f.get('filesize_approx')
             size_text = humanbytes(filesize) if filesize else "Unknown"
-            # Ensure we add only distinct heights, prefer ones with audio
             existing = next((x for x in vid_formats if x['height'] == height), None)
             if not existing:
                 vid_formats.append({
@@ -147,7 +142,7 @@ async def show_formats(client, message, url, info):
                     'has_audio': has_audio
                 })
             else:
-                # If current has audio but existing doesn't, replace
+                # Prefer formats with audio
                 if has_audio and not existing['has_audio']:
                     existing['format_id'] = f['format_id']
                     existing['label'] = f"{height}p ({size_text})"
@@ -168,7 +163,7 @@ async def show_formats(client, message, url, info):
     FORMAT_CACHE[key] = {'url': url, 'info': info, 'vid_formats': vid_formats, 'audio_formats': audio_formats}
 
     buttons = []
-    # Add video formats sorted by height (descending) so highest first
+    # Sort video formats by height descending (highest first)
     for fmt in sorted(vid_formats, key=lambda x: x['height'], reverse=True):
         buttons.append([InlineKeyboardButton(f"📹 {fmt['label']}", callback_data=f"dl|{key}|{fmt['format_id']}|video")])
     for fmt in audio_formats:
@@ -378,51 +373,56 @@ async def perform_download(user_id, url, fmt_id, mode, prog):
         from fix_thumb import fix_thumb
         thumb_path = await fix_thumb(thumb_path)
 
-    # Check if file > 2GB; we'll handle in upload
     return {"file_path": file_path, "thumb": thumb_path, "title": title, "duration": duration,
             "width": width, "height": height, "size": filesize}
 
+# ---- Upload function with 2GB split support ----
 async def upload_file(client, user_id, file_path, thumb, title, duration, width, height, mode, cb):
     settings = await get_user_settings(user_id)
     chat_id = settings.get("upload_chat_id") or user_id
     caption = (settings.get("caption") or f"📹 {title}\n📦 Size: {humanbytes(os.path.getsize(file_path))}").replace('<','(').replace('>',')')
     thumb = settings.get("thumb_file_id") or thumb
 
-    # Check if file > 2GB (Telegram limit)
     max_size = 2 * 1024 * 1024 * 1024  # 2GB
     file_size = os.path.getsize(file_path)
-    if file_size > max_size:
-        # Split file into parts
-        await cb("📦 File is large (>2GB). Splitting into parts...")
-        base_name = os.path.splitext(file_path)[0]
-        part_size = 2 * 1024 * 1024 * 1024  # 2GB per part
-        # Use split command if available, else fallback to manual
-        try:
-            subprocess.run(["split", "-b", "2G", file_path, f"{base_name}.part."], check=True)
-            # Now send each part
-            parts = sorted([f for f in os.listdir(Config.DOWNLOAD_DIR) if f.startswith(os.path.basename(base_name)) and f.startswith(f"{os.path.basename(base_name)}.part.")])
+
+    try:
+        if file_size > max_size:
+            await cb("📦 File is large (>2GB). Splitting into parts...")
+            base_name = os.path.splitext(file_path)[0]
+            part_path = f"{base_name}.part."
+            # Use split command (available in Linux)
+            subprocess.run(["split", "-b", "2G", file_path, part_path], check=True)
+            # Find parts
+            parts = sorted([f for f in os.listdir(Config.DOWNLOAD_DIR) if f.startswith(os.path.basename(part_path))])
             total_parts = len(parts)
             for idx, part_file in enumerate(parts, start=1):
-                part_path = os.path.join(Config.DOWNLOAD_DIR, part_file)
-                part_caption = f"📹 {title} (Part {idx}/{total_parts})\n📦 Size: {humanbytes(os.path.getsize(part_path))}"
+                part_full = os.path.join(Config.DOWNLOAD_DIR, part_file)
+                part_caption = f"📹 {title} (Part {idx}/{total_parts})\n📦 Size: {humanbytes(os.path.getsize(part_full))}"
                 if idx < total_parts:
                     part_caption += "\n⬇️ Remaining parts will be sent shortly."
                 else:
                     part_caption += "\n✅ All parts sent."
                 if mode == "audio":
-                    await client.send_audio(chat_id=chat_id, audio=part_path, caption=part_caption, duration=duration, thumb=thumb if thumb else None)
+                    await client.send_audio(chat_id=chat_id, audio=part_full, caption=part_caption, duration=duration, thumb=thumb if thumb else None)
                 else:
-                    await client.send_video(chat_id=chat_id, video=part_path, caption=part_caption, duration=duration,
+                    await client.send_video(chat_id=chat_id, video=part_full, caption=part_caption, duration=duration,
                                             width=width, height=height, thumb=thumb if thumb else None, supports_streaming=True)
-                os.remove(part_path)
-        except Exception as e:
-            await cb(f"❌ Splitting failed: {e}")
-            raise
-    else:
-        # Normal upload
-        try:
+                os.remove(part_full)
+        else:
+            # Normal upload
             if mode == "audio":
                 await client.send_audio(chat_id=chat_id, audio=file_path, caption=caption, duration=duration, thumb=thumb if thumb else None)
             else:
                 await client.send_video(chat_id=chat_id, video=file_path, caption=caption, duration=duration,
-    
+                                        width=width, height=height, thumb=thumb if thumb else None, supports_streaming=True)
+        await cb("✅ Upload completed!")
+    except Exception as e:
+        await cb(f"❌ Upload failed: {e}")
+        raise
+    finally:
+        # Cleanup
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if thumb and os.path.exists(thumb):
+            os.remove(thumb)

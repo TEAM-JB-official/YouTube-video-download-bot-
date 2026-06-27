@@ -42,6 +42,8 @@ class DownloadQueue:
     async def _process_task(self, task):
         user_id = task["user_id"]
         callback = task["callback"]
+        status_msg = task.get("status_msg")
+        original_msg = task.get("original_msg")
 
         if self._is_cancelled(user_id):
             self._clear_cancel(user_id)
@@ -62,13 +64,14 @@ class DownloadQueue:
         await callback("⬇️ Download started...")
 
         try:
-            # ✅ Correct: pass 'prog=callback'
             result = await perform_download(
                 user_id=user_id,
                 url=task["url"],
                 fmt_id=task["fmt_id"],
                 mode=task["mode"],
-                prog=callback
+                prog=callback,
+                status_msg=status_msg,
+                original_msg=original_msg
             )
 
             if self._is_cancelled(user_id):
@@ -94,7 +97,9 @@ class DownloadQueue:
                     width=result.get("width"),
                     height=result.get("height"),
                     mode=task["mode"],
-                    cb=callback  # ✅ Correct: 'cb=' not 'callback='
+                    cb=callback,
+                    status_msg=status_msg,
+                    original_msg=original_msg
                 )
                 await add_download_history(user_id, task["url"], task["fmt_id"], result.get("size", 0))
                 await callback("✅ Download and upload completed!")
@@ -121,7 +126,7 @@ class DownloadQueue:
         has_queued = any(t["user_id"] == user_id for t in self.queue._queue)
         return has_active or has_queued
 
-    async def add_task(self, user_id, url, fmt_id, mode, callback):
+    async def add_task(self, user_id, url, fmt_id, mode, callback, status_msg=None, original_msg=None):
         if user_id in self.cancel_events:
             self.cancel_events[user_id].clear()
             del self.cancel_events[user_id]
@@ -140,5 +145,7 @@ class DownloadQueue:
             "url": url,
             "fmt_id": fmt_id,
             "mode": mode,
-            "callback": callback
+            "callback": callback,
+            "status_msg": status_msg,
+            "original_msg": original_msg
         })

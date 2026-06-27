@@ -15,6 +15,8 @@ def humanbytes(size):
     return f"{round(size, 2)} {units[n]}B"
 
 def get_duration(seconds):
+    if not seconds:
+        return "N/A"
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
@@ -23,6 +25,12 @@ def get_duration(seconds):
         return f"{int(minutes)}m {int(seconds)}s"
     else:
         return f"{int(seconds)}s"
+
+def progress_bar(percentage, length=20):
+    """Generate a styled progress bar."""
+    filled = int(length * percentage / 100)
+    bar = "█" * filled + "░" * (length - filled)
+    return bar
 
 async def progress_callback(current, total, message, start_time):
     if total == 0:
@@ -39,7 +47,6 @@ async def progress_callback(current, total, message, start_time):
         f"⏳ ETA: {eta_str}\n"
         f"🔄 {percent:.1f}%"
     )
-    # Update only every 2 seconds to avoid flood
     if int(elapsed) % 2 == 0:
         try:
             await message.edit_text(progress_text)

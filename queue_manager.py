@@ -98,8 +98,8 @@ class DownloadQueue:
                     height=result.get("height"),
                     mode=task["mode"],
                     callback=callback,
-                    status_msg=status_msg,
-                    original_msg=original_msg
+                    status_msg=status_msg,      # ← pass for upload progress
+                    original_msg=original_msg   # ← pass for upload progress
                 )
                 await add_download_history(user_id, task["url"], task["fmt_id"], result.get("size", 0))
                 await callback("✅ Download and upload completed!")

@@ -10,9 +10,9 @@ from handlers.download import perform_download, upload_file
 logger = logging.getLogger(__name__)
 
 class DownloadQueue:
-    def __init__(self, max_workers=2):
+    def __init__(self, max_workers=3):
         self.queue = asyncio.Queue()
-        self.active = defaultdict(int)
+        self.active = defaultdict(int)   # user_id -> active tasks
         self.cancel_events = {}
         self.max_workers = max_workers
         self.workers = []
@@ -43,6 +43,7 @@ class DownloadQueue:
         user_id = task["user_id"]
         callback = task["callback"]
 
+        # Check cancellation
         if self._is_cancelled(user_id):
             self._clear_cancel(user_id)
             await callback("⏹️ Cancelled by user.")
@@ -53,6 +54,7 @@ class DownloadQueue:
             await callback("❌ You are banned.")
             return
 
+        # Daily limit
         today_downloads = await get_user_downloads_today(user_id)
         daily_limit = user.get("daily_limit", Config.FREE_DAILY_LIMIT)
         if today_downloads >= daily_limit:
@@ -62,10 +64,11 @@ class DownloadQueue:
         await callback("⬇️ Download started...")
 
         try:
+            # ✅ CORRECT: pass fmt_id (not format_id)
             result = await perform_download(
                 user_id=user_id,
                 url=task["url"],
-                format_id=task["format_id"],
+                fmt_id=task["fmt_id"],
                 mode=task["mode"],
                 progress_callback=callback
             )
@@ -95,7 +98,7 @@ class DownloadQueue:
                     mode=task["mode"],
                     callback=callback
                 )
-                await add_download_history(user_id, task["url"], task["format_id"], result.get("size", 0))
+                await add_download_history(user_id, task["url"], task["fmt_id"], result.get("size", 0))
                 await callback("✅ Download and upload completed!")
             else:
                 await callback("❌ Download failed – no file produced.")
@@ -120,7 +123,8 @@ class DownloadQueue:
         has_queued = any(t["user_id"] == user_id for t in self.queue._queue)
         return has_active or has_queued
 
-    async def add_task(self, user_id, url, format_id, mode, callback):
+    async def add_task(self, user_id, url, fmt_id, mode, callback):
+        # Clear stale cancellation
         if user_id in self.cancel_events:
             self.cancel_events[user_id].clear()
             del self.cancel_events[user_id]
@@ -137,7 +141,7 @@ class DownloadQueue:
         await self.queue.put({
             "user_id": user_id,
             "url": url,
-            "format_id": format_id,
+            "fmt_id": fmt_id,          # ✅ key name matches the function parameter
             "mode": mode,
             "callback": callback
         })

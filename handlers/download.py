@@ -76,6 +76,7 @@ async def youtube_handler(client, message):
 
     try:
         # First try with android+ios, fallback to web if needed
+        info = None
         for clients in (["android", "ios"], ["web"]):
             try:
                 ydl_opts = build_ydl_opts("best", player_clients=clients)
@@ -87,6 +88,10 @@ async def youtube_handler(client, message):
                 if clients == ["web"]:
                     raise
                 continue
+
+        if info is None:
+            await processing.edit_text("❌ Could not fetch video info. Check logs.")
+            return
 
         if info.get('_type') == 'playlist':
             entries = info.get('entries', [])
@@ -122,7 +127,15 @@ async def youtube_handler(client, message):
         await show_formats(client, processing, url, info)
 
     except yt_dlp.utils.DownloadError as e:
-        await processing.edit_text(f"❌ YouTube error: {e}")
+        error_msg = str(e)
+        if "cookies" in error_msg.lower() or "login" in error_msg.lower():
+            await processing.edit_text(
+                "❌ **YouTube requires login** for this video.\n"
+                "Please add a valid `cookies.txt` file to the bot's root directory.\n"
+                "Export cookies from your browser (logged into YouTube)."
+            )
+        else:
+            await processing.edit_text(f"❌ YouTube error: {e}")
     except Exception as e:
         logger.exception("Error processing URL")
         try:
@@ -229,6 +242,7 @@ async def playlist_item(client, callback_query):
     video_url = f"https://youtu.be/{video_id}"
 
     try:
+        info = None
         for clients in (["android", "ios"], ["web"]):
             try:
                 ydl_opts = build_ydl_opts("best", player_clients=clients)
@@ -237,8 +251,11 @@ async def playlist_item(client, callback_query):
                 break
             except:
                 continue
-        await show_formats(client, callback_query.message, video_url, info)
-        await callback_query.message.delete()
+        if info:
+            await show_formats(client, callback_query.message, video_url, info)
+            await callback_query.message.delete()
+        else:
+            await callback_query.answer("Could not fetch video info.", show_alert=True)
     except Exception as e:
         await callback_query.answer(f"Error: {e}", show_alert=True)
 

@@ -10,60 +10,9 @@ logger = logging.getLogger(__name__)
 FORMAT_CACHE, PLAYLIST_CACHE = {}, {}
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
-# ---------- Proxy handling ----------
-# First try environment variable, then fallback to a list of known working proxies.
-FALLBACK_PROXIES = [
-    "http://176.111.37.5:39811",
-    "http://104.21.41.239:80",
-    "http://104.16.81.76:80",
-    "http://5.10.247.220:80",
-    "http://45.131.6.202:80",
-]
-_working_proxy = None
-
-async def test_proxy(proxy):
-    """Test if a proxy works by attempting a small YouTube request."""
-    try:
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "proxy": proxy,
-            "extractor_args": {"youtube": {"player_client": ["web"]}, "youtubetab": {"skip": ["authcheck"]}},
-            "cookiefile": Config.COOKIE_FILE,
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info("https://youtu.be/dQw4w9WgXcQ", download=False)
-        return True
-    except Exception as e:
-        logger.debug(f"Proxy test failed for {proxy}: {e}")
-        return False
-
-async def get_working_proxy():
-    """Return a working proxy from env or fallback list."""
-    global _working_proxy
-    if _working_proxy:
-        return _working_proxy
-
-    # First check environment variable
-    env_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or Config.HTTP_PROXY
-    if env_proxy:
-        if await test_proxy(env_proxy):
-            _working_proxy = env_proxy
-            logger.info(f"Using proxy from env: {env_proxy}")
-            return env_proxy
-        else:
-            logger.warning(f"Env proxy {env_proxy} failed, trying fallback list")
-
-    # Test fallback proxies
-    random.shuffle(FALLBACK_PROXIES)
-    for proxy in FALLBACK_PROXIES:
-        if await test_proxy(proxy):
-            _working_proxy = proxy
-            logger.info(f"Using fallback proxy: {proxy}")
-            return proxy
-
-    logger.warning("No working proxy found – will use no proxy (may cause HTTP 429)")
-    return None
+# ---------- No proxy logic ----------
+# Use a proxy ONLY if set in environment, otherwise use direct connection
+PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or None
 
 # ---------- yt-dlp options ----------
 USER_AGENTS = [
@@ -116,8 +65,9 @@ async def extract_with_clients(url, clients, cookiefile=None, proxy=None, extra_
         return None
 
 async def get_video_info(url, cookiefile=None, proxy=None):
+    # Use the global PROXY if not provided
     if proxy is None:
-        proxy = await get_working_proxy()
+        proxy = PROXY  # could be None
     strategies = [
         (["web"], cookiefile, None),
         (["android", "ios"], None, None),
@@ -178,11 +128,11 @@ async def youtube_handler(client, message):
     if user.get("banned"): return await message.reply_text("You are banned.")
     processing = await message.reply_text("🔍 Fetching video info...")
     try:
-        info = await get_video_info(url, Config.COOKIE_FILE, None)
+        info = await get_video_info(url, Config.COOKIE_FILE, PROXY)
         if not info:
             await processing.edit_text(
                 "❌ Could not fetch video info.\n"
-                "Make sure `cookies.txt` is fresh and a working proxy is set via `HTTP_PROXY`."
+                "Make sure `cookies.txt` is fresh. If the IP is blocked, restart your server or use a working proxy."
             )
             return
         if info.get('_type') == 'playlist':
@@ -271,7 +221,7 @@ async def playlist_item(client, cq):
     if not video_id: return await cq.answer("Invalid video.", show_alert=True)
     video_url = f"https://youtu.be/{video_id}"
     info_msg = await cq.message.reply_text("🔍 Fetching video info...")
-    info = await get_video_info(video_url, Config.COOKIE_FILE, None)
+    info = await get_video_info(video_url, Config.COOKIE_FILE, PROXY)
     if info:
         await show_single_buttons(client, info_msg, video_url, info)
         await cq.message.delete()
@@ -355,7 +305,8 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
     info = None
     last_err = None
 
-    proxy = await get_working_proxy()
+    # Use the global proxy (None if not set)
+    proxy = PROXY
 
     for fmt in formats:
         for clients, use_cookies in [(["web"], True), (["android","ios"], False), (["android"], True)]:

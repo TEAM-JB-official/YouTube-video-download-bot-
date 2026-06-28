@@ -10,11 +10,32 @@ logger = logging.getLogger(__name__)
 FORMAT_CACHE, PLAYLIST_CACHE = {}, {}
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
-# ---------- Proxy ----------
-# Read proxy from environment, remove trailing slash if present
-PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or None
-if PROXY and PROXY.endswith("/"):
-    PROXY = PROXY[:-1]  # remove trailing slash
+# ---------- Proxy handling ----------
+def clean_proxy(proxy):
+    """Remove trailing slash and ensure http:// prefix."""
+    if not proxy:
+        return None
+    proxy = proxy.strip()
+    if proxy.endswith("/"):
+        proxy = proxy[:-1]
+    if not proxy.startswith("http://") and not proxy.startswith("https://"):
+        proxy = "http://" + proxy
+    return proxy
+
+PROXY = clean_proxy(os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or None)
+
+# ---------- Test proxy ----------
+async def test_proxy(proxy_url):
+    """Test if the proxy works with YouTube."""
+    if not proxy_url:
+        return False
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://youtube.com", proxy=proxy_url, timeout=10) as resp:
+                return resp.status == 200
+    except Exception as e:
+        logger.warning(f"Proxy test failed: {e}")
+        return False
 
 # ---------- yt-dlp options ----------
 USER_AGENTS = [
@@ -50,7 +71,7 @@ def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None, extra_args=No
     if extra_args:
         opts["extractor_args"]["youtube"].update(extra_args)
     if proxy:
-        opts["proxy"] = proxy  # ✅ Pass proxy directly
+        opts["proxy"] = proxy
     if "audio" in fmt or fmt.startswith("bestaudio"):
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return opts
@@ -67,8 +88,17 @@ async def extract_with_clients(url, clients, cookiefile=None, proxy=None, extra_
         return None
 
 async def get_video_info(url, cookiefile=None, proxy=None):
+    # Test proxy if provided
+    if proxy:
+        if not await test_proxy(proxy):
+            logger.warning(f"Proxy {proxy} failed test – falling back to no proxy")
+            proxy = None
+    # If proxy is None, use the global PROXY (which may also be None)
     if proxy is None:
         proxy = PROXY
+        if proxy and not await test_proxy(proxy):
+            logger.warning(f"Global proxy {proxy} failed test – using no proxy")
+            proxy = None
     strategies = [
         (["web"], cookiefile, None),
         (["android", "ios"], None, None),
@@ -306,7 +336,8 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
     info = None
     last_err = None
 
-    proxy = PROXY  # Use the global proxy
+    # Use the global proxy (already tested)
+    proxy = PROXY
 
     for fmt in formats:
         for clients, use_cookies in [(["web"], True), (["android","ios"], False), (["android"], True)]:

@@ -10,9 +10,11 @@ logger = logging.getLogger(__name__)
 FORMAT_CACHE, PLAYLIST_CACHE = {}, {}
 YOUTUBE_REGEX = r'^(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|playlist\?list=|shorts/|embed/|v/|.+\?v=)?([^&?#]+)'
 
-# ---------- No proxy logic ----------
-# Use a proxy ONLY if set in environment, otherwise use direct connection
+# ---------- Proxy ----------
+# Read proxy from environment, remove trailing slash if present
 PROXY = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or None
+if PROXY and PROXY.endswith("/"):
+    PROXY = PROXY[:-1]  # remove trailing slash
 
 # ---------- yt-dlp options ----------
 USER_AGENTS = [
@@ -48,7 +50,7 @@ def build_ydl_opts(fmt, cookiefile=None, proxy=None, clients=None, extra_args=No
     if extra_args:
         opts["extractor_args"]["youtube"].update(extra_args)
     if proxy:
-        opts["proxy"] = proxy
+        opts["proxy"] = proxy  # ✅ Pass proxy directly
     if "audio" in fmt or fmt.startswith("bestaudio"):
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return opts
@@ -65,9 +67,8 @@ async def extract_with_clients(url, clients, cookiefile=None, proxy=None, extra_
         return None
 
 async def get_video_info(url, cookiefile=None, proxy=None):
-    # Use the global PROXY if not provided
     if proxy is None:
-        proxy = PROXY  # could be None
+        proxy = PROXY
     strategies = [
         (["web"], cookiefile, None),
         (["android", "ios"], None, None),
@@ -305,8 +306,7 @@ async def perform_download(user_id, url, fmt_id, mode, prog, status_msg=None, or
     info = None
     last_err = None
 
-    # Use the global proxy (None if not set)
-    proxy = PROXY
+    proxy = PROXY  # Use the global proxy
 
     for fmt in formats:
         for clients, use_cookies in [(["web"], True), (["android","ios"], False), (["android"], True)]:
